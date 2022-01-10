@@ -1,3 +1,7 @@
+# I Need More Information
+Check out our [RPC Firewall](https://zeronetworks.com/blog/stopping_lateral_movement_via_the_rpc_firewall/) blog post to gain better understanding of RPC, RPC attacks and the solution: the RPC Firewall.
+For any questions, issues, or simlpy to shout out - we would love to hear from you! Contact us at [support@zeronetworks.com](mailto:support@zeronetworks.com)
+
 # Why should I care?
 RPC is the underlying mechanism which is used for numerous **lateral movement** techniques, **reconnaisense**, **relay** attacks, or simply to **exploit vulnerable RPC services**.
 
@@ -29,6 +33,8 @@ It is made up from 3 components:
 # How to use?
 ## Installing / Uninstalling 
 Installation simply drops the RPC Firewall DLLs into the %SystemRoot%\System32, and configures the **RPCFWP** application log for the Event Viewer.
+
+Make sure the event viewer is closed during install/uninstall.
 ```bash
 RpcFwManager.exe /install
 ```
@@ -91,6 +97,12 @@ Whenever the configuration changes, you need to notify the rpcFirewall.dll via t
 ```bash
 RpcFwManager.exe /update
 ```
+
+## Viewing Logs
+Open the Event Viewer -> Applications and Services Logs -> RPCFWP.
+
+Add the Keywords column - this column would contain Audit Success/Failure.
+
 # Can I Contribute?
 Yes! Don't be shy to do a pull request. 
 

@@ -13,34 +13,36 @@
 #define GLOBAL_SHARED_MEMORY TEXT("Global\\RpcFwRules")
 #define MEM_BUF_SIZE 0xFFFF
 
+#define DllExport   __declspec( dllexport )
+
 struct RpcEventParameters
 {
-	BOOL rpcAllowd;
-	std::basic_string<TCHAR> functionName;
-	std::basic_string<TCHAR> processID;
-	std::basic_string<TCHAR> processName;
-	std::basic_string<TCHAR> protocol;
-	std::basic_string<TCHAR> endpoint;
-	std::basic_string<TCHAR> sourceAddress;
-	std::basic_string<TCHAR> uuidString;
-	std::basic_string<TCHAR> OpNum;
-	std::basic_string<TCHAR> clientName;
-	std::basic_string<TCHAR> authnLevel;
-	std::basic_string<TCHAR> authnSvc;
+	bool rpcAllowd;
+	std::wstring functionName;
+	std::wstring processID;
+	std::wstring processName;
+	std::wstring protocol;
+	std::wstring endpoint;
+	std::wstring sourceAddress;
+	std::wstring uuidString;
+	std::wstring OpNum;
+	std::wstring clientName;
+	std::wstring authnLevel;
+	std::wstring authnSvc;
 };
 
-LIBRARY_API BOOL deleteEventSource();
+DllExport bool deleteEventSource();
 
-LIBRARY_API void addEventSource();
+DllExport void addEventSource();
 
-LIBRARY_API BOOL processProtectedEvent(BOOL , TCHAR*, TCHAR* );
+DllExport bool processProtectedEvent(bool , wchar_t*, wchar_t* );
 
-LIBRARY_API BOOL processUnprotectedEvent(BOOL, TCHAR*, TCHAR* );
+DllExport bool processUnprotectedEvent(bool, wchar_t*, wchar_t* );
 
-LIBRARY_API BOOL rpcFunctionCalledEvent(BOOL , RpcEventParameters );
+DllExport bool rpcFunctionCalledEvent(bool , const RpcEventParameters& );
 
-LIBRARY_API BOOL compareCharCaseInsensitive(TCHAR , TCHAR );
+DllExport bool compareCharCaseInsensitive(wchar_t , wchar_t );
 
-LIBRARY_API BOOL compareStringsCaseinsensitive(TCHAR*, TCHAR* );
+DllExport bool compareStringsCaseinsensitive(wchar_t*, wchar_t* );
 
-LIBRARY_API BOOL compareStringsCaseinsensitive(TCHAR* , TCHAR* , DWORD );
+DllExport bool compareStringsCaseinsensitive(wchar_t* , wchar_t* , size_t);

@@ -10,116 +10,46 @@
 #include <tchar.h>
 #include <tuple>
 #include <vector>
+#include <type_traits>
+#include <algorithm>
+#include "config.hpp"
+#include "rpcWrappers.hpp"
 
 HMODULE myhModule;
 
-struct OpNumStruct
-{
-	BOOL anyOpnum;
-	DWORD opnum;
-};
+DoubleBufferedConfig config;
+std::string privateConfigBuffer = {};
 
-struct UUIDStruct
-{
-	BOOL anyUUID;
-	std::basic_string<TCHAR> uuid;
-};
-
-struct AddressStruct
-{
-	BOOL anyAddress;
-	std::basic_string<TCHAR> address;
-};
-
-struct LineConfig
-{
-	UUIDStruct uuid;
-	OpNumStruct opnum;
-	AddressStruct source_addr;
-	BOOL allow;
-	BOOL audit;
-	BOOL verbose;
-};
-
-std::basic_string<CHAR> privateConfigBuffer = {};
-
-std::vector<LineConfig> configVectorOne = {};
-std::vector<LineConfig> configVectorTwo = {};
-
-enum ActiveConfigBufferNumber { One, Two};
-ActiveConfigBufferNumber activeConfBufferNumber = One;
-CHAR* mappedBuf;
-BOOL AuditOnly = FALSE;
-BOOL detouredFunctions = FALSE;
-BOOL verbose = TRUE;
+CHAR* mappedBuf = nullptr;
+bool AuditOnly = false;
+bool detouredFunctions = false;
+bool verbose = true;
 #define MUTEX_TIMEOUT_MS 15000
-TCHAR myProcessName[MAX_PATH];
-TCHAR myProcessID[16] = { 0 };
+wchar_t myProcessName[MAX_PATH];
+wchar_t myProcessID[16] = { 0 };
 
-HANDLE uninstallEvent = NULL;
-HANDLE configurationUpdatedEvent = NULL;
-HANDLE managerDoneEvent = NULL;
-HANDLE hConfigurationMapFile = NULL;
+HANDLE uninstallEvent = nullptr;
+HANDLE configurationUpdatedEvent = nullptr;
+HANDLE managerDoneEvent = nullptr;
+HANDLE hConfigurationMapFile = nullptr;
 
 DWORD configurationVersion = 0;
-
-template<typename T>
-struct to_tstring_forwarder;
-
-template<>
-struct to_tstring_forwarder<char>
-{
-	template<typename U>
-	static std::basic_string<char> to_tstring(U arg)
-	{
-		return std::to_string(arg);
-	}
-};
-
-template<>
-struct to_tstring_forwarder<wchar_t>
-{
-	template<typename U>
-	static std::basic_string<wchar_t> to_tstring(U arg)
-	{
-		return std::to_wstring(arg);
-	}
-};
 
 template<typename T, typename U>
 std::basic_string<T> to_tstring(U arg)
 {
-	return to_tstring_forwarder<T>::to_tstring(arg);
-}
-
-void changeActiveConfigurationNumber()
-{
-	if (activeConfBufferNumber == One)
+	if constexpr (std::is_same_v<T, char>)
 	{
-		activeConfBufferNumber = Two;
+		return std::to_string(arg);
+	}
+	else if constexpr (std::is_same_v<T, wchar_t>)
+	{
+		return std::to_wstring(arg);
 	}
 	else
 	{
-		activeConfBufferNumber = One;
+		static_assert(false);
 	}
-}
-
-std::vector<LineConfig>& getActiveConfigurationVector()
-{
-	if (activeConfBufferNumber == One)
-	{
-		return configVectorOne;
-	}
-	return configVectorTwo;
-}
-
-std::vector<LineConfig>& getNonActiveConfigurationVector()
-{
-	if (activeConfBufferNumber == One)
-	{
-		return configVectorTwo;
-	}
-	return configVectorOne;
 }
 
 static long (WINAPI* realNdrStubCall2)(void* pThis, void* pChannel, PRPC_MESSAGE pRpcMsg, unsigned long* pdwStubPhase) = NdrStubCall2;
@@ -156,26 +86,26 @@ void WINAPI detouredNdrServerCallNdr64(PRPC_MESSAGE pRpcMsg);
 	if (verbose) \
 		writeDebugOutputWithPIDGetLastError(msg)
 
-void writeDebugOutputWithPID(std::basic_string<TCHAR> dbgMsg)
+void writeDebugOutputWithPID(const std::wstring& dbgMsg)
 {
 	OutputDebugString(dbgMsg.c_str());
 }
 
-void writeDebugOutputWithPIDWithStatusMessage(std::basic_string<TCHAR> dbgMsg, DWORD status)
+void writeDebugOutputWithPIDWithStatusMessage(const std::wstring& dbgMsg, DWORD status)
 {
-	std::basic_string<TCHAR> errMsg = dbgMsg + _T(" : ") + std::to_wstring(status);
+	std::wstring errMsg = dbgMsg + _T(" : ") + std::to_wstring(status);
 	writeDebugOutputWithPID(errMsg);
 }
 
-void writeDebugOutputWithPIDWithErrorMessage(std::basic_string<TCHAR> dbgMsg, TCHAR* errMsgPtr)
+void writeDebugOutputWithPIDWithErrorMessage(const std::wstring& dbgMsg, wchar_t* errMsgPtr)
 {
 	if (verbose)
 	{
-		TCHAR pidBuf[32];
+		wchar_t pidBuf[32];
 		_stprintf_s(pidBuf, _T("%d"), GetCurrentProcessId());
 
-		std::basic_string<TCHAR> finalMessage = pidBuf;
-		std::basic_string<TCHAR> errMsg = errMsgPtr;
+		std::wstring finalMessage = pidBuf;
+		std::wstring errMsg = errMsgPtr;
 
 		finalMessage += TEXT(" - ");
 		finalMessage += dbgMsg;
@@ -186,16 +116,16 @@ void writeDebugOutputWithPIDWithErrorMessage(std::basic_string<TCHAR> dbgMsg, TC
 	}
 }
 
-void writeDebugOutputWithPIDGetLastError(std::basic_string<TCHAR> dbgMsg)
+void writeDebugOutputWithPIDGetLastError(const std::wstring& dbgMsg)
 {
 	if (verbose)
 	{
 
-		TCHAR errBuf[32];
+		wchar_t errBuf[32];
 		_stprintf_s(errBuf, _T("%d"), GetLastError());
 
-		std::basic_string<TCHAR> finalMessage = _T("");
-		std::basic_string<TCHAR> errMsg = errBuf;
+		std::wstring finalMessage = _T("");
+		std::wstring errMsg = errBuf;
 
 		finalMessage += dbgMsg;
 		finalMessage += TEXT(" : ");
@@ -204,31 +134,26 @@ void writeDebugOutputWithPIDGetLastError(std::basic_string<TCHAR> dbgMsg)
 	}
 }
 
-void unloadSelf()
+bool checkIfReleventRegisteredEndpointsForProcess()
 {
-	FreeLibraryAndExitThread(myhModule, 0);
-}
-
-BOOL checkIfReleventRegisteredEndpointsForProcess()
-{
-	BOOL relevantEndpoint = FALSE;
+	bool relevantEndpoint = false;
 	RPC_BINDING_VECTOR* binding_vector;
 	RPC_WSTR szStringBinding;
-	std::basic_string<TCHAR> allEndpoints = _T("Endpoint LIST:");
-	std::basic_string<TCHAR> singleEndpoint;
+	std::wstring allEndpoints = _T("Endpoint LIST:");
+	std::wstring singleEndpoint;
 
 	RPC_STATUS status = RpcServerInqBindings(&binding_vector);
 	if (status == RPC_S_OK)
 	{
-		for (int i = 0; i < binding_vector->Count; i++)
+		for (unsigned long i = 0; i < binding_vector->Count; i++)
 		{
 			status = RpcBindingToStringBinding(binding_vector->BindingH[i], &szStringBinding);
 			if (status == RPC_S_OK)
 			{
-				singleEndpoint = (TCHAR*)szStringBinding;
-				if (_tcsstr(singleEndpoint.c_str(), _T("ncalrpc")) == NULL)
+				singleEndpoint = (wchar_t*)szStringBinding;
+				if (_tcsstr(singleEndpoint.c_str(), _T("ncalrpc")) == nullptr)
 				{
-					relevantEndpoint = TRUE;
+					relevantEndpoint = true;
 				}
 				allEndpoints += singleEndpoint + _T(",");
 			}
@@ -245,28 +170,28 @@ BOOL checkIfReleventRegisteredEndpointsForProcess()
 	else
 	{
 		WRITE_DEBUG_MSG(TEXT("No registered endpoints? still using RPC firewall..."));
-		relevantEndpoint = TRUE;
+		relevantEndpoint = true;
 	}
 
 	return relevantEndpoint;
 }
 
-BOOL checkIfRegisteredUUIDsForProcess()
+bool checkIfRegisteredUUIDsForProcess()
 {
 	RPC_IF_ID_VECTOR* if_id_vector;
 	RPC_WSTR szStringUuid;
-	std::basic_string<TCHAR> allUUIDs = _T("UUID LIST:");
-	std::basic_string<TCHAR> singleUUID;
+	std::wstring allUUIDs = _T("UUID LIST:");
+	std::wstring singleUUID;
 
-	RPC_STATUS status = RpcMgmtInqIfIds(NULL, &if_id_vector);
+	RPC_STATUS status = RpcMgmtInqIfIds(nullptr, &if_id_vector);
 	if (status == RPC_S_OK)
 	{
-		for (int i = 0; i < if_id_vector->Count; i++)
+		for (unsigned long i = 0; i < if_id_vector->Count; i++)
 		{
 			status = UuidToString(&(if_id_vector->IfId[i]->Uuid), &szStringUuid);
 			if (status == RPC_S_OK)
 			{
-				singleUUID = (TCHAR*)szStringUuid;
+				singleUUID = (wchar_t*)szStringUuid;
 				allUUIDs += singleUUID + _T(",");
 			}
 			RpcStringFree(&szStringUuid);
@@ -282,13 +207,13 @@ BOOL checkIfRegisteredUUIDsForProcess()
 	else
 	{
 		WRITE_DEBUG_MSG(TEXT("No registered interfaces, unloading firewall..."));
-		return FALSE;
+		return false;
 	}
 
-	return TRUE;
+	return true;
 }
 
-std::basic_string<TCHAR> convertAuthLevelToString(unsigned long authLvl)
+std::wstring convertAuthLevelToString(unsigned long authLvl)
 {
 	switch (authLvl)
 	{
@@ -303,7 +228,7 @@ std::basic_string<TCHAR> convertAuthLevelToString(unsigned long authLvl)
 	return TEXT("UNKNOWN");
 }
 
-std::basic_string<TCHAR> convertAuthSvcToString(unsigned long authSvc)
+std::wstring convertAuthSvcToString(unsigned long authSvc)
 {
 	switch (authSvc)
 	{
@@ -320,7 +245,7 @@ std::basic_string<TCHAR> convertAuthSvcToString(unsigned long authSvc)
 	return TEXT("UNKNOWN");
 }
 
-std::tuple<DWORD, DWORD, BOOL> getConfigOffsets(std::basic_string<CHAR> confStr)
+std::tuple<size_t, size_t, bool> getConfigOffsets(std::string confStr)
 {
 	size_t start_pos = confStr.find("!start!");
 	size_t end_pos = confStr.find("!end!");
@@ -328,11 +253,11 @@ std::tuple<DWORD, DWORD, BOOL> getConfigOffsets(std::basic_string<CHAR> confStr)
 	if (start_pos == std::string::npos || end_pos == std::string::npos)
 	{
 		WRITE_DEBUG_MSG(_T("Error reading start or end markers"));
-		return std::make_tuple(0, 0, FALSE);
+		return std::make_tuple(0, 0, false);
 	}
 	start_pos += 7;
 
-	return std::make_tuple(start_pos, end_pos, TRUE);
+	return std::make_tuple(start_pos, end_pos, true);
 }
 
 std::wstring StringToWString(const std::string& s)
@@ -342,110 +267,92 @@ std::wstring StringToWString(const std::string& s)
 	return temp;
 }
 
-std::basic_string<TCHAR> extractKeyValueFromConfigLine(std::basic_string<TCHAR> confLine, std::basic_string<TCHAR> key)
+std::wstring extractKeyValueFromConfigLineInner(const std::wstring& confLine, const std::wstring & key)
 {
-	confLine.replace(confLine.size() - 2, 1, _T(" "));
-	size_t keyOffset = confLine.find(key);
+	const size_t keyOffset = confLine.find(key);
 
 	if (keyOffset == std::string::npos) return _T("\0");
 
-	size_t nextKeyOffset = confLine.find(_T(" "), keyOffset + 1);
+	const size_t nextKeyOffset = confLine.find(_T(" "), keyOffset + 1);
 
 	if (nextKeyOffset == std::string::npos) return _T("\0");
 
-	std::basic_string<TCHAR> val = confLine.substr(keyOffset + key.size(), nextKeyOffset - keyOffset - key.size());
+	std::wstring val = confLine.substr(keyOffset + key.size(), nextKeyOffset - keyOffset - key.size());
 
 	return val;
 }
 
-UUIDStruct extractUUIDFromConfigLine(std::basic_string<TCHAR> confLine)
+std::wstring extractKeyValueFromConfigLine(const std::wstring& confLine, const std::wstring& key)
 {
-	UUIDStruct uuidStr = {};
-	uuidStr.uuid = extractKeyValueFromConfigLine(confLine, _T("uuid:"));
-	
-	if ((uuidStr.uuid).empty())
-	{
-		uuidStr.anyUUID = TRUE;
-	}
-	else
-	{
-		uuidStr.anyUUID = FALSE;
-	}
+	std::wstring fixedConfLine = confLine;
 
-	return uuidStr;
+	fixedConfLine.replace(fixedConfLine.size() - 1, 1, _T(" "));
+
+	return extractKeyValueFromConfigLineInner(fixedConfLine, key);
 }
 
-OpNumStruct extractOpNumFromConfigLine(std::basic_string<TCHAR> confLine)
+UUIDFilter extractUUIDFilterFromConfigLine(const std::wstring& confLine)
 {
-	OpNumStruct opnumStruct = {};
-	std::basic_string<TCHAR> opnumString = extractKeyValueFromConfigLine(confLine, _T("opnum:"));
+	std::wstring uuid = extractKeyValueFromConfigLine(confLine, _T("uuid:"));
+	
+	std::transform(uuid.begin(), uuid.end(), uuid.begin(), ::tolower);
+
+	return uuid.empty() ? UUIDFilter{} : UUIDFilter{ uuid };
+}
+
+OpNumFilter extractOpNumFilterFromConfigLine(const std::wstring& confLine)
+{
+	const std::wstring opnumString = extractKeyValueFromConfigLine(confLine, _T("opnum:"));
 
 	if (opnumString.empty())
 	{
-		opnumStruct.anyOpnum = TRUE;
+		return {};
 	}
-	else
-	{
-		try {
-			opnumStruct.opnum = std::stoi(opnumString);
-			opnumStruct.anyOpnum = FALSE;
-		}
-		catch (const std::invalid_argument& ia) {
-			opnumStruct.anyOpnum = TRUE;
-			WRITE_DEBUG_MSG(_T("Invalid opnum provided: ") + opnumString);
-		}
+
+	try {
+		return std::stoi(opnumString);
 	}
-	return opnumStruct;
+	catch (const std::invalid_argument&) {
+		WRITE_DEBUG_MSG(_T("Invalid opnum provided: ") + opnumString);
+		return {};
+	}
 }
 
-AddressStruct extractAddressFromConfigLine(std::basic_string<TCHAR> confLine)
+AddressFilter extractAddressFromConfigLine(const std::wstring& confLine)
 {
-	AddressStruct addrStruct = {};
-	addrStruct.address = extractKeyValueFromConfigLine(confLine, _T("addr:"));
+	const std::wstring address = extractKeyValueFromConfigLine(confLine, _T("addr:"));
 
-	if ((addrStruct.address).empty())
-	{
-		addrStruct.anyAddress = TRUE;
-	}
-	else
-	{
-		addrStruct.anyAddress = FALSE;
-	}
-	return addrStruct;
+	return address.empty() ? AddressFilter{} : AddressFilter{ address };
 }
 
-BOOL extractActionFromConfigLine(std::basic_string<TCHAR> confLine)
+bool extractActionFromConfigLine(const std::wstring& confLine)
 {
-	std::basic_string<TCHAR> action = extractKeyValueFromConfigLine(confLine, _T("action:"));
+	std::wstring action = extractKeyValueFromConfigLine(confLine, _T("action:"));
 
-	if (action.find(_T("block")) != std::string::npos)
-	{
-		return FALSE;
-	}
-	
-	return TRUE;
+	return action.find(_T("block")) == std::string::npos;
 }
 
-BOOL extractAuditFromConfigLine(std::basic_string<TCHAR> confLine)
+bool extractAuditFromConfigLine(const std::wstring& confLine)
 {
-	std::basic_string<TCHAR> audit = extractKeyValueFromConfigLine(confLine, _T("audit:"));
+	std::wstring audit = extractKeyValueFromConfigLine(confLine, _T("audit:"));
 
-	if (audit.find(_T("true")) != std::string::npos)
-	{
-		return TRUE;
-	}
-
-	return FALSE;
+	return audit.find(_T("true")) != std::string::npos;
 }
 
-BOOL extractVerboseFromConfigLine(std::basic_string<TCHAR> confLine)
+RpcCallPolicy extractPolicyFromConfigLine(const std::wstring& confLine)
 {
-	std::basic_string<TCHAR> loc_verbose = extractKeyValueFromConfigLine(confLine, _T("verbose:"));
-	if (loc_verbose.find(_T("true")) != std::string::npos)
+	return RpcCallPolicy
 	{
-		return TRUE;
-	}
-	return FALSE;
+		.allow = extractActionFromConfigLine(confLine),
+		.audit = extractAuditFromConfigLine(confLine),
+	};
+}
+
+bool extractVerboseFromConfigLine(const std::wstring& confLine)
+{
+	std::wstring loc_verbose = extractKeyValueFromConfigLine(confLine, _T("verbose:"));
+
+	return loc_verbose.find(_T("true")) != std::string::npos;
 }
 
 void loadPrivateBufferToPassiveVectorConfiguration()
@@ -456,14 +363,14 @@ void loadPrivateBufferToPassiveVectorConfiguration()
 	size_t start_pos = std::get<0>(markers);
 	size_t end_pos = std::get<1>(markers);
 
-	std::basic_string<CHAR> configurationOnly = privateConfigBuffer.substr(start_pos, end_pos - start_pos);
+	std::string configurationOnly = privateConfigBuffer.substr(start_pos, end_pos - start_pos);
 
-	std::basic_istringstream<TCHAR> configStream(StringToWString(configurationOnly));
-	std::basic_string<TCHAR> confLineString;
-	TCHAR configLine[256];
+	std::basic_istringstream<wchar_t> configStream(StringToWString(configurationOnly));
+	std::wstring confLineString;
+	wchar_t configLine[256];
 
 	size_t size = privateConfigBuffer.size() + 1;
-	std::vector<LineConfig> passiveConfigVector = {};
+	ConfigVector passiveConfigVector = {};
 
 	if (size > 1)
 	{
@@ -473,114 +380,107 @@ void loadPrivateBufferToPassiveVectorConfiguration()
 			confLineString += _T(" ");
 			LineConfig lineConfig = {};
 
-			lineConfig.uuid = extractUUIDFromConfigLine(confLineString);
-			lineConfig.opnum = extractOpNumFromConfigLine(confLineString);
+			lineConfig.uuid = extractUUIDFilterFromConfigLine(confLineString);
+			lineConfig.opnum = extractOpNumFilterFromConfigLine(confLineString);
 			lineConfig.source_addr = extractAddressFromConfigLine(confLineString);
-			lineConfig.allow = extractActionFromConfigLine(confLineString);
-			lineConfig.audit = extractAuditFromConfigLine(confLineString);
+			lineConfig.policy = extractPolicyFromConfigLine(confLineString);
 			lineConfig.verbose = extractVerboseFromConfigLine(confLineString);
 			passiveConfigVector.push_back(lineConfig);
 		}
 	}
 
-	getNonActiveConfigurationVector() = passiveConfigVector;
+	config.setPassiveConfigurationVector(passiveConfigVector);
 }
 
-BOOL checkKeyValueInConfigLine(TCHAR* confLine, TCHAR* key,DWORD keySize,std::basic_string<TCHAR> value)
+bool checkKeyValueInConfigLine(wchar_t* confLine, wchar_t* key,DWORD keySize, const std::wstring& value)
 {
-	std::basic_string<TCHAR> confString = confLine;
+	std::wstring confString = confLine;
 	confString += _T("");
 
 	size_t keyOffset = confString.find(key);
-	if (keyOffset == std::string::npos) return TRUE;
+	if (keyOffset == std::string::npos) return true;
 
 	size_t keyEndOffset = confString.find(_T(" "), keyOffset);
 	size_t configValueSize = keyEndOffset - keyOffset - keySize;
-
-	TCHAR* configValue = (TCHAR*)confString.substr(keyOffset + keySize, configValueSize).c_str();
-
+	
 	if (configValueSize != value.size())
 	{
-		return FALSE;
+		return false;
 	}
 
-	return compareStringsCaseinsensitive(configValue, (TCHAR*)value.c_str(), configValueSize);
+	auto configValueStr = confString.substr(keyOffset + keySize, configValueSize);
+
+	return compareStringsCaseinsensitive((wchar_t*)configValueStr.c_str(), (wchar_t*)value.c_str(), configValueSize);
 }
 
-BOOL checkAudit(TCHAR* confLine)
+bool checkAudit(wchar_t* confLine)
 {
-	if (_tcsstr(confLine, TEXT("audit:true")))
+	return _tcsstr(confLine, TEXT("audit:true"));
+}
+
+bool checkUUID(const UUIDFilter& uuidFilter, const std::wstring& uuidString)
+{
+	if (!uuidFilter.has_value())
 	{
-		return TRUE;
+		return true;
 	}
-	return FALSE;
+	
+	return uuidFilter.value().find(uuidString) != std::string::npos;
 }
 
-BOOL checkUUID(UUIDStruct uuidStructure, std::basic_string<TCHAR> uuidString)
+bool checkOpNum(const OpNumFilter& opNumFilter, const std::wstring& opNumString)
 {
-	if (uuidStructure.anyUUID)
+	if (!opNumFilter.has_value())
 	{
-		return TRUE;
+		return true;
 	}
-	return uuidStructure.uuid.find(uuidString) != std::string::npos;
+
+	return opNumFilter == std::stoi(opNumString);
 }
 
-BOOL checkOpNum(OpNumStruct opnumStructure, std::basic_string<TCHAR> opNum)
+bool checkAddress(const AddressFilter& addrFilter, const std::wstring& srcAddr)
 {
-	if (opnumStructure.anyOpnum)
+	if (!addrFilter.has_value())
 	{
-		return TRUE;
+		return true;
 	}
-	return (opnumStructure.opnum == std::stoi(opNum));
+	
+	return addrFilter == srcAddr;
 }
 
-BOOL checkAddress(AddressStruct addrStructure, std::basic_string<TCHAR> srcAddr)
+RpcCallPolicy getMatchingPolicy(const RpcEventParameters& rpcEvent)
 {
-	if (addrStructure.anyAddress)
-	{
-		return TRUE;
-	}
-	return (addrStructure.address == srcAddr);
-}
+	const ConfigVector& configurationVector = config.getActiveConfigurationVector();
 
-std::pair<BOOL,BOOL> checkIfRPCCallFiltered(RpcEventParameters rpcEvent)
-{
-	std::vector<LineConfig> configurationVector = getActiveConfigurationVector();
-
-	BOOL UUIDMatch, AddressMatch, OpNumMatch, auditCall, filterCall = FALSE;
-	DWORD verboseCount = 0;
-	for (LineConfig lc : configurationVector)
+	for (const LineConfig& lc : configurationVector)
 	{
-		UUIDMatch = checkUUID(lc.uuid, rpcEvent.uuidString);
-		AddressMatch = checkAddress(lc.source_addr, rpcEvent.sourceAddress);
-		OpNumMatch = checkOpNum(lc.opnum, rpcEvent.OpNum);
+		const bool UUIDMatch = checkUUID(lc.uuid, rpcEvent.uuidString);
+		const bool AddressMatch = checkAddress(lc.source_addr, rpcEvent.sourceAddress);
+		const bool OpNumMatch = checkOpNum(lc.opnum, rpcEvent.OpNum);
 
 		if (UUIDMatch && AddressMatch && OpNumMatch)
 		{
 			WRITE_DEBUG_MSG(_T("Rule Matched for RPC call."));
-			auditCall = lc.audit;
-			filterCall = !lc.allow;
 
-			break;
+			return lc.policy;
 		}
 	}
 
-	return std::make_pair(filterCall,auditCall);
+	return RpcCallPolicy{};
 }
 
 void mappedBufferCopyToPrivateConfiguration()
 {
-	std::string mappedBufStr = mappedBuf;
-	privateConfigBuffer = mappedBufStr;
+	privateConfigBuffer = mappedBuf;
 }
 
-BOOL isNewVersion()
+bool isNewVersion()
 {
 	size_t verLoc = privateConfigBuffer.find("ver:");
 	if (verLoc == std::string::npos)
 	{
 		WRITE_DEBUG_MSG(_T("No version keyword found"));
-		return FALSE;
+		return false;
 	}
 	size_t verEndPos = privateConfigBuffer.find(" ") + 1;
 	DWORD newVersion = std::stoi(privateConfigBuffer.substr(verLoc + 4, verEndPos - 5));
@@ -589,15 +489,15 @@ BOOL isNewVersion()
 	{
 		WRITE_DEBUG_MSG(_T("New configuration version detected."));
 		configurationVersion = newVersion;
-		return TRUE;
+		return true;
 	}
 
-	return FALSE;
+	return false;
 }
 
-BOOL isHashValid()
+bool isHashValid()
 {
-	BOOL validConfig = FALSE;
+	bool validConfig = false;
 	// Try and read buffer untill hash is valid
 	size_t hashLoc = privateConfigBuffer.find("hash:");
 	if (hashLoc == std::string::npos)
@@ -621,67 +521,73 @@ BOOL isHashValid()
 	size_t start_pos = std::get<0>(markers);
 	size_t end_pos = std::get<1>(markers);
 
-	size_t calculatedHashValue = std::hash<std::basic_string<CHAR>>{}(privateConfigBuffer.substr(start_pos,end_pos - start_pos));
+	size_t calculatedHashValue = std::hash<std::string>{}(privateConfigBuffer.substr(start_pos,end_pos - start_pos));
 
 	if (calculatedHashValue == declaredHashVal)
 	{
-		validConfig = TRUE;
+		validConfig = true;
 	}
 
 	return validConfig;
 }
 
-BOOL checkIfVerbose()
+bool checkIfVerbose()
 {
-	std::vector<LineConfig> configurationVector = getActiveConfigurationVector();
+	const ConfigVector& configurationVector = config.getActiveConfigurationVector();
 
-	for (LineConfig lc : configurationVector)
-	{
-		if (lc.verbose)
-		{
-			return TRUE;
-		}
-	}
-	return FALSE;
+	return std::any_of(configurationVector.begin(), configurationVector.end(), [](const LineConfig& lc) { return lc.verbose; });
 }
 
 void loadConfigurationFromMappedMemory()
 {
-	hConfigurationMapFile = OpenFileMapping(FILE_MAP_READ,FALSE,GLOBAL_SHARED_MEMORY);               
-	if (hConfigurationMapFile == NULL)
+	if (hConfigurationMapFile == nullptr)
 	{
-		WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("Could not open configuration. Auditing only..."));
-		AuditOnly = TRUE;
+		WRITE_DEBUG_MSG(_TEXT("Calling OpenFileMapping..."));
+		hConfigurationMapFile = OpenFileMapping(FILE_MAP_READ, false, GLOBAL_SHARED_MEMORY);
+
+		if (hConfigurationMapFile == nullptr)
+		{
+			WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("Could not open configuration. Auditing only..."));
+			AuditOnly = true;
+
+			return;
+		}
 	}
-	else
+	
+	if (mappedBuf == nullptr)
 	{
+		WRITE_DEBUG_MSG(_TEXT("Calling MapViewOfFile..."));
 		mappedBuf = (CHAR*)MapViewOfFile(hConfigurationMapFile, FILE_MAP_READ, 0, 0, MEM_BUF_SIZE);
-		if (mappedBuf == NULL)
+
+		if (mappedBuf == nullptr)
 		{
 			WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("Error: Could not map view of file."));
 			CloseHandle(hConfigurationMapFile);
-		}
+			hConfigurationMapFile = nullptr;
 
-		for (int i = 0; i < 5; i++)
+			return;
+		}
+	}
+
+	for (int i = 0; i < 5; i++)
+	{
+		mappedBufferCopyToPrivateConfiguration();
+		if (isHashValid())
 		{
-			mappedBufferCopyToPrivateConfiguration();
-			if (isHashValid())
+			if (isNewVersion())
 			{
-				if (isNewVersion())
-				{
-					loadPrivateBufferToPassiveVectorConfiguration();
-					changeActiveConfigurationNumber();
-					verbose = checkIfVerbose();
-				}
-				break;
+				loadPrivateBufferToPassiveVectorConfiguration();
+				config.changeActiveConfigurationNumber();
+				verbose = checkIfVerbose();
 			}
+			break;
 		}
 	}
 }
 
-void writeEventToDebugOutput(RpcEventParameters eventParams, BOOL allowCall)
+void writeEventToDebugOutput(RpcEventParameters eventParams, bool allowCall)
 {
-	std::basic_string<TCHAR> dbgMsg = _T("");
+	std::wstring dbgMsg = _T("");
 	dbgMsg += TEXT("RPC Function ");
 	if (allowCall)
 	{
@@ -698,19 +604,19 @@ void writeEventToDebugOutput(RpcEventParameters eventParams, BOOL allowCall)
 void waitForFurtherInstructions()
 {
 	loadConfigurationFromMappedMemory();
-	HANDLE uninstallEvent = OpenEvent(SYNCHRONIZE, FALSE, GLOBAL_RPCFW_EVENT_UNPROTECT);
+	HANDLE uninstallEvent = OpenEvent(SYNCHRONIZE, false, GLOBAL_RPCFW_EVENT_UNPROTECT);
 
-	if (uninstallEvent != NULL)
+	if (uninstallEvent != nullptr)
 	{
 		HANDLE allEvents[2];
 		allEvents[0] = uninstallEvent;
 		allEvents[1] = configurationUpdatedEvent;
-		BOOL keepOnSpinning = true;
+		bool keepOnSpinning = true;
 
 		while (keepOnSpinning)
 		{
 			DWORD dwWaitResult = WaitForSingleObject(uninstallEvent, 10000);
-			//DWORD dwWaitResult = WaitForMultipleObjects(2, allEvents, FALSE, INFINITE);
+			//DWORD dwWaitResult = WaitForMultipleObjects(2, allEvents, false, INFINITE);
 			switch (dwWaitResult) {
 			case WAIT_OBJECT_0:
 				WRITE_DEBUG_MSG(TEXT("Unprotect event..."));
@@ -729,21 +635,29 @@ void waitForFurtherInstructions()
 	{
 		WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("OpenEvent failed, unloading firewall..."));
 	}
-	unloadSelf();
 }
+
+
+struct AutoUnloader
+{
+	~AutoUnloader()
+	{
+		FreeLibraryAndExitThread(myhModule, 0);
+	}
+};
 
 void mainStart()
 {
+	AutoUnloader autoUnloader;
+
 	WRITE_DEBUG_MSG(TEXT("RPCFirewall DLL Loaded..."));
 	if (!checkIfRegisteredUUIDsForProcess())
 	{
-		unloadSelf();
 		return;
 	}
 
-	if (!checkIfReleventRegisteredEndpointsForProcess() && _tcsstr(myProcessName,_T("spoolsv.exe")) == NULL)
+	if (!checkIfReleventRegisteredEndpointsForProcess() && _tcsstr(myProcessName,_T("spoolsv.exe")) == nullptr)
 	{
-		unloadSelf();
 		return;
 	}
 
@@ -753,7 +667,7 @@ void mainStart()
 	DetourTransactionBegin();
 	DetourUpdateThread(GetCurrentThread());
 
-	detouredFunctions = TRUE;
+	detouredFunctions = true;
 
 	if (DetourAttach(&(PVOID&)realNdrStubCall2, detouredNdrStubCall2) != NO_ERROR)
 	{
@@ -783,18 +697,15 @@ void mainStart()
 	LONG errCode = DetourTransactionCommit();
 	if (errCode != NO_ERROR)
 	{
-		TCHAR errMsg[MAX_PATH];
+		wchar_t errMsg[MAX_PATH];
 		_stprintf_s(errMsg, TEXT("RpcFirewall installation error, DetourTransactionCommit() failed :%d"), errCode);
 		WRITE_DEBUG_MSG(errMsg);
-		processProtectedEvent(FALSE, myProcessName, myProcessID);
-		unloadSelf();
+		processProtectedEvent(false, myProcessName, myProcessID);
 		return;
 	}
-	else
-	{
-		WRITE_DEBUG_MSG(TEXT("RpcFirewall installed!"));
-		processProtectedEvent(TRUE, myProcessName, myProcessID);
-	}
+
+	WRITE_DEBUG_MSG(TEXT("RpcFirewall installed!"));
+	processProtectedEvent(true, myProcessName, myProcessID);
 
 	waitForFurtherInstructions();
 }
@@ -816,49 +727,49 @@ void dllDetached()
 		if (DetourTransactionCommit() == NO_ERROR)
 		{
 			WRITE_DEBUG_MSG(TEXT("RpcFirewall uninstalled."));
-			processUnprotectedEvent(TRUE, myProcessName, myProcessID);
+			processUnprotectedEvent(true, myProcessName, myProcessID);
 		}
 		else
 		{
 			WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("RpcFirewall uninstall error: DetourTransactionCommit() failed!"));
-			processUnprotectedEvent(FALSE, myProcessName, myProcessID);
+			processUnprotectedEvent(false, myProcessName, myProcessID);
 		}
 	}
 
-	if (uninstallEvent != NULL) CloseHandle(uninstallEvent);
-	if (configurationUpdatedEvent != NULL) CloseHandle(configurationUpdatedEvent);
-	if (managerDoneEvent != NULL) CloseHandle(managerDoneEvent);
-	if (hConfigurationMapFile != NULL) CloseHandle(hConfigurationMapFile);
+	if (uninstallEvent != nullptr) CloseHandle(uninstallEvent);
+	if (configurationUpdatedEvent != nullptr) CloseHandle(configurationUpdatedEvent);
+	if (managerDoneEvent != nullptr) CloseHandle(managerDoneEvent);
+	if (hConfigurationMapFile != nullptr) CloseHandle(hConfigurationMapFile);
 
 }
 
-BOOL APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved)
+bool APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpReserved)
 {
-	GetModuleFileName(NULL, myProcessName, MAX_PATH);
+	GetModuleFileName(nullptr, myProcessName, MAX_PATH);
 	_stprintf_s(myProcessID, TEXT("%d"), GetCurrentProcessId());
 
     switch (ul_reason_for_call)
     {
 		case DLL_PROCESS_ATTACH:
 			myhModule = hModule;
-			CreateThread(NULL, 0, (LPTHREAD_START_ROUTINE)mainStart, NULL, 0,NULL);
+			CreateThread(nullptr, 0, (LPTHREAD_START_ROUTINE)mainStart, nullptr, 0,nullptr);
 			break;
 		case DLL_PROCESS_DETACH:
 			dllDetached();		
     }
-    return TRUE;
+    return true;
 }
 
-RpcEventParameters populateEventParameters(PRPC_MESSAGE pRpcMsg, TCHAR* szStringBindingServer, TCHAR* szStringBinding, TCHAR* functionName)
+RpcEventParameters populateEventParameters(PRPC_MESSAGE pRpcMsg, wchar_t* szStringBindingServer, wchar_t* szStringBinding, wchar_t* functionName)
 {
 	RpcEventParameters eventParams = {};
-	eventParams.functionName = std::basic_string<TCHAR>(functionName);
-	eventParams.processID = std::basic_string<TCHAR>(myProcessID);
-	eventParams.processName = std::basic_string<TCHAR>(myProcessName);
+	eventParams.functionName = std::wstring(functionName);
+	eventParams.processID = std::wstring(myProcessID);
+	eventParams.processName = std::wstring(myProcessName);
 
 
-	std::basic_string<TCHAR> szWstringBindingServer = std::basic_string<TCHAR>(szStringBindingServer);
-	std::basic_string<TCHAR> szWstringBinding = std::basic_string<TCHAR>(szStringBinding);
+	std::wstring szWstringBindingServer = std::wstring(szStringBindingServer);
+	std::wstring szWstringBinding = std::wstring(szStringBinding);
 
 	size_t pos = szWstringBinding.find(_T(":"), 0);
 	
@@ -877,18 +788,18 @@ RpcEventParameters populateEventParameters(PRPC_MESSAGE pRpcMsg, TCHAR* szString
 
 	_RPC_IF_ID* rpcifid = (_RPC_IF_ID*)(byteUuidPointer + 4);
 
-	RPC_WSTR szStringUuid = NULL;
+	RPC_WSTR szStringUuid = nullptr;
 	RPC_STATUS status = UuidToString(&(rpcifid->Uuid), &szStringUuid);
 	if (status == RPC_S_OK)
 	{
-		eventParams.uuidString = std::basic_string<TCHAR>((TCHAR*)szStringUuid);
-		eventParams.OpNum = to_tstring<TCHAR>(pRpcMsg->ProcNum);
+		eventParams.uuidString = std::wstring((wchar_t*)szStringUuid);
+		eventParams.OpNum = to_tstring<wchar_t>(pRpcMsg->ProcNum);
 
 		RPC_AUTHZ_HANDLE Privs;
 		unsigned long AuthnLevel;
 		unsigned long AuthnSvc;
 		unsigned long AuthzSvc;
-		status = RpcBindingInqAuthClient(NULL, &Privs, NULL, &AuthnLevel, &AuthnSvc, &AuthzSvc);
+		status = RpcBindingInqAuthClient(nullptr, &Privs, nullptr, &AuthnLevel, &AuthnSvc, &AuthzSvc);
 		if (status == RPC_S_BINDING_HAS_NO_AUTH || status != RPC_S_OK)
 		{
 			eventParams.clientName = TEXT("UNKNOWN");
@@ -897,133 +808,143 @@ RpcEventParameters populateEventParameters(PRPC_MESSAGE pRpcMsg, TCHAR* szString
 		}
 		else
 		{
-			eventParams.clientName = (TCHAR*)Privs;
+			eventParams.clientName = (wchar_t*)Privs;
 			eventParams.authnLevel = convertAuthLevelToString(AuthnLevel);
 			eventParams.authnSvc = convertAuthSvcToString(AuthnSvc);
 		}
 	}
 
-	if (szStringUuid != NULL) RpcStringFree(&szStringUuid);
+	if (szStringUuid != nullptr) RpcStringFree(&szStringUuid);
 	return eventParams;
 }
 
-void rpcFunctionVerboseOutput(BOOL allowCall, RpcEventParameters eventParams)
+void rpcFunctionVerboseOutput(bool allowCall, const RpcEventParameters& eventParams)
 {
-	std::basic_string<TCHAR> allowed(_T("Allowed"));
-	if (!allowCall) allowed = _T("Blocked");
-	if (verbose)
-	{
-		std::basic_string<TCHAR> verboseRpcCall(allowed + _T(",") + eventParams.functionName + _T(",") + eventParams.uuidString + _T(",") + eventParams.OpNum + _T(",") + eventParams.endpoint + _T(",") + eventParams.sourceAddress + _T(",") + eventParams.clientName + _T(",") + eventParams.authnLevel + _T(",") + eventParams.authnSvc);
-		WRITE_DEBUG_MSG(verboseRpcCall.c_str());
-	}
+	std::wstringstream wss;
+
+	wss << (allowCall ? _T("Allowed") : _T("Blocked")) << _T(",");
+	wss << eventParams.functionName + _T(",");
+	wss << eventParams.uuidString << _T(",");
+	wss << eventParams.OpNum << _T(",");
+	wss << eventParams.endpoint << _T(",");
+	wss << eventParams.sourceAddress << _T(",");
+	wss << eventParams.clientName << _T(",");
+	wss << eventParams.authnLevel << _T(",");
+	wss << eventParams.authnSvc;
+
+	WRITE_DEBUG_MSG(wss.str());
 }
 
-BOOL processRPCCallInternal(TCHAR* functionName, PRPC_MESSAGE pRpcMsg)
+bool processRPCCallInternal(wchar_t* functionName, PRPC_MESSAGE pRpcMsg)
 {
-	RPC_BINDING_HANDLE serverBinding = NULL;
-	TCHAR* szStringBinding = NULL;
-	TCHAR* szStringBindingServer = NULL;
-	BOOL allowCall = TRUE;
-	BOOL auditCall = FALSE;
+	RpcCallPolicy policy{};
 
-	try {
-		RPC_STATUS status;
-
-		status = RpcBindingServerFromClient(0, &serverBinding);
+	try
+	{
+		RpcBindingWrapper serverBinding;
+		RPC_STATUS status = RpcBindingServerFromClient(0, &serverBinding.binding);
 		if (status != RPC_S_OK)
 		{
 			WRITE_DEBUG_MSG_WITH_STATUS(_T("RpcBindingServerFromClient failed"), status);
-			return allowCall;
+			return true;
 		}
 
-		status = RpcBindingToStringBinding(serverBinding, (RPC_WSTR*)&szStringBinding);
+		RpcStringWrapper szStringBinding;
+		status = RpcBindingToStringBinding(serverBinding.binding, szStringBinding.getRpcPtr());
 		if (status != RPC_S_OK)
 		{
 			WRITE_DEBUG_MSG_WITH_STATUS(_T("RpcBindingToStringBinding failed"), status);
-			return allowCall;
-		}
-		// Consider only calls over network transports
-		if (_tcsstr(szStringBinding, _T("ncalrpc")) != NULL)
-		{
-			return allowCall;
+			return true;
 		}
 
-		status = RpcBindingToStringBinding(pRpcMsg->Handle, (RPC_WSTR*)&szStringBindingServer);
+		// Consider only calls over network transports
+		if (_tcsstr(szStringBinding.str, _T("ncalrpc")) != nullptr)
+		{
+			return true;
+		}
+
+		RpcStringWrapper szStringBindingServer;
+		status = RpcBindingToStringBinding(pRpcMsg->Handle, szStringBindingServer.getRpcPtr());
 		if (status != RPC_S_OK)
 		{
 			WRITE_DEBUG_MSG_WITH_STATUS(_T("Could not extract server endpoint via RpcBindingToStringBinding"), status);
 		}
 
-		RpcEventParameters eventParams = populateEventParameters(pRpcMsg, szStringBindingServer, szStringBinding, functionName);
-		auto configResult = checkIfRPCCallFiltered(eventParams);
-		allowCall = !configResult.first;
-		auditCall = configResult.second;
-		rpcFunctionVerboseOutput(allowCall,eventParams);
-		if (auditCall) rpcFunctionCalledEvent(allowCall, eventParams);
+		const RpcEventParameters eventParams = populateEventParameters(pRpcMsg, szStringBindingServer.str, szStringBinding.str, functionName);
+		
+		policy = getMatchingPolicy(eventParams);
+
+		if (verbose)
+		{
+			rpcFunctionVerboseOutput(policy.allow, eventParams);
+		}
+
+		if (policy.audit)
+		{
+			rpcFunctionCalledEvent(policy.allow, eventParams);
+		}
 	}
 	catch (const std::runtime_error& re) {
-		WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("Exception: Runtime error during call"), (TCHAR*)re.what());
+		WRITE_DEBUG_MSG_WITH_ERROR_MSG(TEXT("Exception: Runtime error during call"), (wchar_t*)re.what());
 	}
 	catch (const std::exception& ex) {
-		WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("Exception: Runtime error during call"), (TCHAR*)ex.what());
+		WRITE_DEBUG_MSG_WITH_ERROR_MSG(TEXT("Exception: Runtime error during call"), (wchar_t*)ex.what());
 	}
 	catch (...) {
 		WRITE_DEBUG_MSG_WITH_GETLASTERROR(TEXT("Exception: Runtime error during call"));
 	}
 
-	if (serverBinding != NULL) RpcBindingFree(&serverBinding);
-	if (szStringBindingServer != NULL) RpcStringFree((RPC_WSTR*)&szStringBindingServer);
-	if (szStringBinding != NULL) RpcStringFree((RPC_WSTR*)&szStringBinding);
-
-	return allowCall;
+	return policy.allow;
 }
 
-void processRPCCall(TCHAR* functionName, PRPC_MESSAGE pRpcMsg)
+void processRPCCall(wchar_t* functionName, PRPC_MESSAGE pRpcMsg)
 {
-	BOOL allowCall = processRPCCallInternal(functionName, pRpcMsg);
-	if (!allowCall) {
+	const bool allowCall = processRPCCallInternal(functionName, pRpcMsg);
+	
+	if (!allowCall)
+	{
 		RpcRaiseException(ERROR_ACCESS_DENIED);
 	}
 }
 
 long WINAPI detouredNdrStubCall2(void* pThis, void* pChannel, PRPC_MESSAGE pRpcMsg, unsigned long* pdwStubPhase)
 {
-	processRPCCall((TCHAR*)_T("NdrStubCall2"), pRpcMsg);
+	processRPCCall((wchar_t*)_T("NdrStubCall2"), pRpcMsg);
 
 	return realNdrStubCall2(pThis, pChannel, pRpcMsg, pdwStubPhase);
 }
 
 void detouredNdrServerCallAll(PRPC_MESSAGE pRpcMsg)
 {
-	processRPCCall((TCHAR*)_T("NdrServerCallAll"), pRpcMsg);
+	processRPCCall((wchar_t*)_T("NdrServerCallAll"), pRpcMsg);
 
 	return realNdrServerCallAll(pRpcMsg);
 }
 
 void detouredNdrAsyncServerCall(PRPC_MESSAGE pRpcMsg)
 {
-	processRPCCall((TCHAR*)_T("NdrAsyncServerCall"), pRpcMsg);
+	processRPCCall((wchar_t*)_T("NdrAsyncServerCall"), pRpcMsg);
 
 	return realNdrAsyncServerCall(pRpcMsg);
 }
 
 void detouredNdr64AsyncServerCallAll(PRPC_MESSAGE pRpcMsg)
 {
-	processRPCCall((TCHAR*)_T("Ndr64AsyncServerCallAll"), pRpcMsg);
+	processRPCCall((wchar_t*)_T("Ndr64AsyncServerCallAll"), pRpcMsg);
 
 	return realNdr64AsyncServerCallAll(pRpcMsg);
 }
 
 void detouredNdr64AsyncServerCall64(PRPC_MESSAGE pRpcMsg)
 {
-	processRPCCall((TCHAR*)_T("Ndr64AsyncServerCall64"), pRpcMsg);
+	processRPCCall((wchar_t*)_T("Ndr64AsyncServerCall64"), pRpcMsg);
 
 	return realNdr64AsyncServerCall64(pRpcMsg);
 }
 
 void detouredNdrServerCallNdr64(PRPC_MESSAGE pRpcMsg)
 {
-	processRPCCall((TCHAR*)_T("NdrServerCallNdr64"), pRpcMsg);
+	processRPCCall((wchar_t*)_T("NdrServerCallNdr64"), pRpcMsg);
 
 	return realNdrServerCallNdr64(pRpcMsg);
 }

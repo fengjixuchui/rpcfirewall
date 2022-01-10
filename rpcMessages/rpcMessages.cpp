@@ -13,12 +13,12 @@
 
 #pragma comment(lib, "advapi32.lib")
 
-#define PROVIDER_NAME TEXT("RPCFWP")
+#define PROVIDER_NAME TEXT("RPCFW")
 #define DLL_PATH TEXT("%SystemRoot%\\system32\\rpcMessages.dll")
 
-HANDLE hEventLog = NULL;
+HANDLE hEventLog = nullptr;
 
-BOOL compareCharCaseInsensitive(TCHAR c1, TCHAR c2)
+bool compareCharCaseInsensitive(wchar_t c1, wchar_t c2)
 {
     if (c1 == c2)
         return true;
@@ -27,9 +27,9 @@ BOOL compareCharCaseInsensitive(TCHAR c1, TCHAR c2)
     return false;
 }
 
-BOOL compareStringsCaseinsensitive(TCHAR* str1, TCHAR* str2)
+bool compareStringsCaseinsensitive(wchar_t* str1, wchar_t* str2)
 {
-    TCHAR tcharEnd = _T("\0")[0];
+    wchar_t tcharEnd = _T("\0")[0];
 
     for (int i = 0; i < MAX_PATH; i++)
     {
@@ -46,11 +46,11 @@ BOOL compareStringsCaseinsensitive(TCHAR* str1, TCHAR* str2)
     return true;
 }
 
-BOOL compareStringsCaseinsensitive(TCHAR* str1, TCHAR* str2, DWORD maxLen)
+bool compareStringsCaseinsensitive(wchar_t* str1, wchar_t* str2, size_t maxLen)
 {
-    TCHAR tcharEnd = _T("\0")[0];
+    wchar_t tcharEnd = _T("\0")[0];
 
-    for (int i = 0; i < maxLen; i++)
+    for (size_t i = 0; i < maxLen; i++)
     {
         if ((str1[i] == tcharEnd) || (str2[i] == tcharEnd))
         {
@@ -65,19 +65,19 @@ BOOL compareStringsCaseinsensitive(TCHAR* str1, TCHAR* str2, DWORD maxLen)
     return true;
 }
 
-BOOL regDelNodeRecurse(HKEY hKeyRoot, LPTSTR lpSubKey)
+bool regDelNodeRecurse(HKEY hKeyRoot, LPTSTR lpSubKey)
 {
     LPTSTR lpEnd;
     LONG lResult;
     DWORD dwSize;
-    TCHAR szName[MAX_PATH];
+    wchar_t szName[MAX_PATH];
     HKEY hKey;
     FILETIME ftWrite;
 
     lResult = RegDeleteKey(hKeyRoot, lpSubKey);
 
     if (lResult == ERROR_SUCCESS)
-        return TRUE;
+        return true;
 
     lResult = RegOpenKeyEx(hKeyRoot, lpSubKey, 0, KEY_READ, &hKey);
 
@@ -85,11 +85,11 @@ BOOL regDelNodeRecurse(HKEY hKeyRoot, LPTSTR lpSubKey)
     {
         if (lResult == ERROR_FILE_NOT_FOUND) {
             _tprintf(_T("Registry key already deleted.\n"));
-            return TRUE;
+            return true;
         }
         else {
             _tprintf(_T("Error opening key.\n"));
-            return FALSE;
+            return false;
         }
     }
 
@@ -103,8 +103,8 @@ BOOL regDelNodeRecurse(HKEY hKeyRoot, LPTSTR lpSubKey)
     }
 
     dwSize = MAX_PATH;
-    lResult = RegEnumKeyEx(hKey, 0, szName, &dwSize, NULL,
-        NULL, NULL, &ftWrite);
+    lResult = RegEnumKeyEx(hKey, 0, szName, &dwSize, nullptr,
+        nullptr, nullptr, &ftWrite);
 
     if (lResult == ERROR_SUCCESS)
     {
@@ -119,8 +119,8 @@ BOOL regDelNodeRecurse(HKEY hKeyRoot, LPTSTR lpSubKey)
 
             dwSize = MAX_PATH;
 
-            lResult = RegEnumKeyEx(hKey, 0, szName, &dwSize, NULL,
-                NULL, NULL, &ftWrite);
+            lResult = RegEnumKeyEx(hKey, 0, szName, &dwSize, nullptr,
+                nullptr, nullptr, &ftWrite);
 
         } while (lResult == ERROR_SUCCESS);
     }
@@ -134,14 +134,14 @@ BOOL regDelNodeRecurse(HKEY hKeyRoot, LPTSTR lpSubKey)
     lResult = RegDeleteKey(hKeyRoot, lpSubKey);
 
     if (lResult == ERROR_SUCCESS)
-        return TRUE;
+        return true;
 
-    return FALSE;
+    return false;
 }
 
-BOOL deleteEventSource()
+bool deleteEventSource()
 {
-    TCHAR   szRegPath[MAX_PATH];
+    wchar_t   szRegPath[MAX_PATH];
 
     _stprintf_s(szRegPath, _T("SYSTEM\\CurrentControlSet\\Services\\EventLog\\%s"), PROVIDER_NAME );
 
@@ -151,29 +151,32 @@ BOOL deleteEventSource()
 
 void addEventSource()
 {
-    HKEY    hRegKey = NULL;
+    HKEY    hRegKey = nullptr;
+    HKEY    hRegKeyParent = nullptr;
     DWORD   dwError = 0;
-    TCHAR   szRegPath[MAX_PATH];
-    TCHAR   szDLLPath[MAX_PATH];
+    wchar_t   szRegPath[MAX_PATH];
+    wchar_t   szDLLPath[MAX_PATH];
+    wchar_t   szRegPathParent[MAX_PATH];
 
+    _stprintf_s(szRegPathParent, _T("SYSTEM\\CurrentControlSet\\Services\\EventLog\\%s"), PROVIDER_NAME);
     _stprintf_s(szRegPath, _T("SYSTEM\\CurrentControlSet\\Services\\EventLog\\%s\\%s"), PROVIDER_NAME, PROVIDER_NAME);
     _stprintf_s(szDLLPath, _T("%s"), DLL_PATH);
 
     // Create the event source registry key
-    if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, szRegPath, 0, NULL, REG_OPTION_NON_VOLATILE, KEY_CREATE_SUB_KEY | KEY_READ | KEY_WRITE | KEY_SET_VALUE, NULL, &hRegKey, NULL) != ERROR_SUCCESS)
+    if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, szRegPath, 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_CREATE_SUB_KEY | KEY_READ | KEY_WRITE | KEY_SET_VALUE, nullptr, &hRegKey, nullptr) != ERROR_SUCCESS)
     {
         _tprintf(TEXT("ERROR: Couldn't create event source registry key: [%d].\n"), GetLastError());
         return;
     }
         // Name of the PE module that contains the message resource
-    if (GetModuleFileName(NULL, szRegPath, MAX_PATH) == 0)
+    if (GetModuleFileName(nullptr, szRegPath, MAX_PATH) == 0)
     {
         _tprintf(TEXT("ERROR: call to GetModuleFileName failed: [%d].\n"), GetLastError());
         return;
     }
     
     // Register EventMessageFile
-    if (RegSetValueEx(hRegKey, _T("EventMessageFile"), 0, REG_EXPAND_SZ, (PBYTE)szDLLPath, (_tcslen(szDLLPath) + 1) * sizeof TCHAR) != ERROR_SUCCESS)
+    if (RegSetValueEx(hRegKey, _T("EventMessageFile"), 0, REG_EXPAND_SZ, (PBYTE)szDLLPath, (DWORD)((_tcslen(szDLLPath) + 1) *  (DWORD)sizeof(wchar_t))) != ERROR_SUCCESS)
     {
         _tprintf(TEXT("ERROR: setting value to EventMessageFile failed: [%d].\n"), GetLastError());
         return;
@@ -181,28 +184,42 @@ void addEventSource()
     
     // Register supported event types
     DWORD dwTypes = EVENTLOG_ERROR_TYPE | EVENTLOG_WARNING_TYPE | EVENTLOG_INFORMATION_TYPE;
-    if (RegSetValueEx(hRegKey, _T("TypesSupported"), 0, REG_DWORD, (LPBYTE)&dwTypes, sizeof dwTypes) != ERROR_SUCCESS)
+    if (RegSetValueEx(hRegKey, _T("TypesSupported"), 0, REG_DWORD, (LPBYTE)&dwTypes, sizeof(dwTypes)) != ERROR_SUCCESS)
     {
         _tprintf(TEXT("ERROR: setting value to TypesSupported failed: [%d].\n"), GetLastError());
         return;
     }   
+
+    if (RegOpenKeyW(HKEY_LOCAL_MACHINE, szRegPathParent, &hRegKeyParent) != ERROR_SUCCESS)
+    {
+        _tprintf(TEXT("ERROR: getting parent key %s : [%d].\n"), szRegPathParent,GetLastError());
+        return;
+    }
+
+    DWORD maxSize = 20971520;
+    if (RegSetValueEx(hRegKeyParent, _T("MaxSize"), 0, REG_DWORD, (LPBYTE)&maxSize, sizeof(maxSize)) != ERROR_SUCCESS)
+    {
+        _tprintf(TEXT("ERROR: setting value to MaxSize failed: [%d].\n"), GetLastError());
+        return;
+    }
+    
     _tprintf(TEXT("Finished configuring the Event Log.\n"));
    RegCloseKey(hRegKey);
    
 }
 
-BOOL processProtectedEvent(BOOL successfulInjection, TCHAR* processName, TCHAR* processID) {
-
-    bool bSuccess = FALSE;
-    DWORD eventType = EVENTLOG_AUDIT_SUCCESS;
-    LPCTSTR aInsertions[2] = { NULL, NULL };
+bool processProtectedEvent(bool successfulInjection, wchar_t* processName, wchar_t* processID)
+{
+    bool bSuccess = false;
+    WORD eventType = EVENTLOG_AUDIT_SUCCESS;
+    LPCTSTR aInsertions[2] = { nullptr, nullptr };
 
     if (!successfulInjection) {
         eventType = EVENTLOG_AUDIT_FAILURE;
     }
 
     // Open the eventlog
-    HANDLE hEventLog = RegisterEventSource(NULL, PROVIDER_NAME);
+    HANDLE hEventLog = RegisterEventSource(nullptr, PROVIDER_NAME);
     aInsertions[0] = processName;
     aInsertions[1] = processID;
 
@@ -213,11 +230,11 @@ BOOL processProtectedEvent(BOOL successfulInjection, TCHAR* processName, TCHAR* 
             eventType,  
             0,               
             PROCESS_PROTECTION_ADDED,           
-            NULL,                       
+            nullptr,                       
             2,                          
             0,                          
             aInsertions,                
-            NULL                        
+            nullptr                        
         );
     }
 
@@ -226,18 +243,18 @@ BOOL processProtectedEvent(BOOL successfulInjection, TCHAR* processName, TCHAR* 
     return bSuccess;
 }
 
-BOOL processUnprotectedEvent(BOOL successfulIUnloading, TCHAR* processName, TCHAR* processID) {
+bool processUnprotectedEvent(bool successfulIUnloading, wchar_t* processName, wchar_t* processID) {
 
-    bool bSuccess = FALSE;
-    DWORD eventType = EVENTLOG_AUDIT_SUCCESS;
-    LPCTSTR aInsertions[2] = { NULL, NULL };
+    bool bSuccess = false;
+    WORD eventType = EVENTLOG_AUDIT_SUCCESS;
+    LPCTSTR aInsertions[2] = { nullptr, nullptr };
 
     if (!successfulIUnloading) {
         eventType = EVENTLOG_AUDIT_FAILURE;
     }
 
     // Open the eventlog
-    HANDLE hEventLog = RegisterEventSource(NULL, PROVIDER_NAME);
+    HANDLE hEventLog = RegisterEventSource(nullptr, PROVIDER_NAME);
     aInsertions[0] = processName;
     aInsertions[1] = processID;
 
@@ -248,11 +265,11 @@ BOOL processUnprotectedEvent(BOOL successfulIUnloading, TCHAR* processName, TCHA
             eventType,  
             0,               
             PROCESS_PROTECTION_REMOVED,           
-            NULL,                       
+            nullptr,                       
             2,                          
             0,                          
             aInsertions,                
-            NULL                        
+            nullptr                        
         );
     }
 
@@ -261,13 +278,13 @@ BOOL processUnprotectedEvent(BOOL successfulIUnloading, TCHAR* processName, TCHA
     return bSuccess;
 }
 
-std::basic_string<TCHAR> escapeIpv6Address(TCHAR* sourceAddress)
+std::wstring escapeIpv6Address(wchar_t* sourceAddress)
 {
-    std::basic_string<TCHAR> sourceAddressEscaped = sourceAddress;
+    std::wstring sourceAddressEscaped = sourceAddress;
 
-    const std::basic_string<TCHAR> s = _T("\\:");
-    const std::basic_string<TCHAR> t = _T(":");
-    std::basic_string<TCHAR>::size_type n = 0;
+    const std::wstring s = _T("\\:");
+    const std::wstring t = _T(":");
+    std::wstring::size_type n = 0;
 
     while ((n = sourceAddressEscaped.find(s, n)) != std::string::npos)
     {
@@ -277,33 +294,33 @@ std::basic_string<TCHAR> escapeIpv6Address(TCHAR* sourceAddress)
     return sourceAddressEscaped;
 }
 
-BOOL rpcFunctionCalledEvent(BOOL callSuccessful, RpcEventParameters eventParams)
+bool rpcFunctionCalledEvent(bool callSuccessful, const RpcEventParameters& eventParams)
 {
-    bool bSuccess = FALSE;
-    DWORD eventType = EVENTLOG_AUDIT_SUCCESS;
-    LPCWSTR aInsertions[11] = {NULL};
+    bool bSuccess = false;
+    WORD eventType = EVENTLOG_AUDIT_SUCCESS;
+    LPCWSTR aInsertions[11] = {nullptr};
    
     if (!callSuccessful) {
         eventType = EVENTLOG_AUDIT_FAILURE;
     }
 
     // Open the eventlog
-    if (hEventLog == NULL)
+    if (hEventLog == nullptr)
     {
-        hEventLog = RegisterEventSource(NULL, PROVIDER_NAME);
+        hEventLog = RegisterEventSource(nullptr, PROVIDER_NAME);
     }
       
-    aInsertions[0] = (TCHAR*)eventParams.functionName.c_str();
-    aInsertions[1] = (TCHAR*)eventParams.processID.c_str();
-    aInsertions[2] = (TCHAR*)eventParams.processName.c_str();
-    aInsertions[3] = (TCHAR*)eventParams.protocol.c_str();
-    aInsertions[4] = (TCHAR*)eventParams.endpoint.c_str();
-    aInsertions[5] = (TCHAR*)(escapeIpv6Address((TCHAR*)eventParams.sourceAddress.c_str())).c_str();
-    aInsertions[6] = (TCHAR*)eventParams.uuidString.c_str();
-    aInsertions[7] = (TCHAR*)eventParams.OpNum.c_str();
-    aInsertions[8] = (TCHAR*)eventParams.clientName.c_str();
-    aInsertions[9] = (TCHAR*)eventParams.authnLevel.c_str();
-    aInsertions[10] = (TCHAR*)eventParams.authnSvc.c_str();
+    aInsertions[0] = (wchar_t*)eventParams.functionName.c_str();
+    aInsertions[1] = (wchar_t*)eventParams.processID.c_str();
+    aInsertions[2] = (wchar_t*)eventParams.processName.c_str();
+    aInsertions[3] = (wchar_t*)eventParams.protocol.c_str();
+    aInsertions[4] = (wchar_t*)eventParams.endpoint.c_str();
+    aInsertions[5] = (wchar_t*)(escapeIpv6Address((wchar_t*)eventParams.sourceAddress.c_str())).c_str();
+    aInsertions[6] = (wchar_t*)eventParams.uuidString.c_str();
+    aInsertions[7] = (wchar_t*)eventParams.OpNum.c_str();
+    aInsertions[8] = (wchar_t*)eventParams.clientName.c_str();
+    aInsertions[9] = (wchar_t*)eventParams.authnLevel.c_str();
+    aInsertions[10] = (wchar_t*)eventParams.authnSvc.c_str();
 
     if (hEventLog) {
         
@@ -312,20 +329,19 @@ BOOL rpcFunctionCalledEvent(BOOL callSuccessful, RpcEventParameters eventParams)
             eventType,  
             0,               
             RPC_SERVER_CALL,           
-            NULL,                      
+            nullptr,                      
             11,                        
             0,                         
             aInsertions,               
-            NULL                       
+            nullptr                       
         );
     }
-    else
 
     return bSuccess;
 }
 
 
-BOOL APIENTRY DllMain( HMODULE hModule,
+bool APIENTRY DllMain( HMODULE hModule,
                        DWORD  ul_reason_for_call,
                        LPVOID lpReserved
                      )
@@ -336,9 +352,9 @@ BOOL APIENTRY DllMain( HMODULE hModule,
             break;
         case DLL_PROCESS_DETACH:
             // Close eventlog
-            if (hEventLog != NULL) DeregisterEventSource(hEventLog);
+            if (hEventLog != nullptr) DeregisterEventSource(hEventLog);
             break;
     }
-    return TRUE;
+    return true;
 }
 

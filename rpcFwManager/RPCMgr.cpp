@@ -1,7 +1,11 @@
 // RPCrawler.cpp : This file contains the 'main' function. Program execution begins and ends there.
 //
 
+#include <optional>
+
 #include "stdafx.h"
+#include "rpcfilters.h"
+#include <algorithm>
 
 HANDLE globalMappedMemory = nullptr;
 HANDLE globalUnprotectlEvent = nullptr;
@@ -11,6 +15,116 @@ enum class eventSignal {signalSetEvent, signalResetEvent};
 typedef std::vector<std::pair<DWORD, std::wstring>> ProcVector;
 
 CHAR configBuf[MEM_BUF_SIZE];
+
+std::tuple<size_t, size_t, bool> getConfigOffsets(std::string confStr)
+{
+	size_t start_pos = confStr.find("!start!");
+	size_t end_pos = confStr.find("!end!");
+
+	if (start_pos == std::string::npos || end_pos == std::string::npos)
+	{
+		_tprintf(_T("Error reading start or end markers"));
+		return std::make_tuple(0, 0, false);
+	}
+	start_pos += 7;
+
+	return std::make_tuple(start_pos, end_pos, true);
+}
+
+std::wstring StringToWString(const std::string& s)
+{
+	std::wstring temp(s.length(), L' ');
+	std::copy(s.begin(), s.end(), temp.begin());
+	return temp;
+}
+
+std::wstring extractKeyValueFromConfigLineInner(const std::wstring& confLine, const std::wstring& key)
+{
+	const size_t keyOffset = confLine.find(key);
+
+	if (keyOffset == std::string::npos) return _T("\0");
+
+	const size_t nextKeyOffset = confLine.find(_T(" "), keyOffset + 1);
+
+	if (nextKeyOffset == std::string::npos) return _T("\0");
+
+	std::wstring val = confLine.substr(keyOffset + key.size(), nextKeyOffset - keyOffset - key.size());
+
+	return val;
+}
+
+std::wstring extractKeyValueFromConfigLine(const std::wstring& confLine, const std::wstring& key)
+{
+	std::wstring fixedConfLine = confLine;
+
+	std::size_t newLinePos = fixedConfLine.rfind(_T("\n"));
+	std::size_t carrigeReturnPos = fixedConfLine.rfind(_T("\r"));
+
+
+	//std::basic_string<wchar_t>::replace(fixedConfLine.begin(), fixedConfLine.end(), _T("\r"), _T(" "));
+	if (newLinePos != std::wstring::npos) fixedConfLine.replace(fixedConfLine.rfind(_T("\n")), 1, _T(" "));
+	if (carrigeReturnPos != std::wstring::npos) fixedConfLine.replace(fixedConfLine.rfind(_T("\r")), 1, _T(" "));
+	
+	fixedConfLine.replace(fixedConfLine.size() - 1, 1, _T(" "));
+
+	return extractKeyValueFromConfigLineInner(fixedConfLine, key);
+}
+
+UUIDFilter extractUUIDFilterFromConfigLine(const std::wstring& confLine)
+{
+	std::wstring uuid = extractKeyValueFromConfigLine(confLine, _T("uuid:"));
+
+	std::transform(uuid.begin(), uuid.end(), uuid.begin(), ::tolower);
+
+	return uuid.empty() ? UUIDFilter{} : UUIDFilter{ uuid };
+}
+
+AddressFilter extractAddressFromConfigLine(const std::wstring& confLine)
+{
+	const std::wstring address = extractKeyValueFromConfigLine(confLine, _T("addr:"));
+
+	return address.empty() ? AddressFilter{} : AddressFilter{ address };
+}
+
+OpNumFilter extractOpNumFilterFromConfigLine(const std::wstring& confLine)
+{
+	const std::wstring opnumString = extractKeyValueFromConfigLine(confLine, _T("opnum:"));
+
+	if (opnumString.empty())
+	{
+		return {};
+	}
+
+	try {
+		return std::stoi(opnumString);
+	}
+	catch (const std::invalid_argument&) {
+		return {};
+	}
+}
+
+bool extractActionFromConfigLine(const std::wstring& confLine)
+{
+	std::wstring action = extractKeyValueFromConfigLine(confLine, _T("action:"));
+
+	return action.find(_T("block")) == std::string::npos;
+}
+
+bool extractAuditFromConfigLine(const std::wstring& confLine)
+{
+	std::wstring audit = extractKeyValueFromConfigLine(confLine, _T("audit:"));
+
+	return audit.find(_T("true")) != std::string::npos;
+}
+
+RpcCallPolicy extractPolicyFromConfigLine(const std::wstring& confLine)
+{
+	return RpcCallPolicy
+	{
+		.allow = extractActionFromConfigLine(confLine),
+		.audit = extractAuditFromConfigLine(confLine),
+	};
+}
 
 void concatArguments(int argc, wchar_t* argv[], wchar_t command[])
 {
@@ -25,7 +139,7 @@ void concatArguments(int argc, wchar_t* argv[], wchar_t command[])
 	_tcscat_s(command, MAX_PATH * 2, TEXT(" /elevated"));
 }
 
-ProcVector getRelevantProcVector(DWORD pid, wchar_t* pName)
+ProcVector getRelevantProcVector(DWORD pid, std::wstring &pName)
 {
 	ProcVector procVector;
 
@@ -38,7 +152,7 @@ ProcVector getRelevantProcVector(DWORD pid, wchar_t* pName)
 	if (bProcess == true) {
 		while ((Process32Next(hTool32, &pe32)) == TRUE) 
 		{
-			if (pName != nullptr && compareStringsCaseinsensitive(pe32.szExeFile, pName))
+			if (!pName.empty() && compareStringsCaseinsensitive(pe32.szExeFile,(wchar_t*)pName.c_str()))
 			{
 				procVector.push_back(std::make_pair(pe32.th32ProcessID, pe32.szExeFile));
 			}
@@ -57,7 +171,7 @@ ProcVector getRelevantProcVector(DWORD pid, wchar_t* pName)
 	return procVector;
 }
 
-void crawlProcesses(DWORD pid, wchar_t* pName) 
+void crawlProcesses(DWORD pid, std::wstring &pName) 
 {
 	ProcVector procToHook = getRelevantProcVector(pid, pName);
 
@@ -73,16 +187,29 @@ void crawlProcesses(DWORD pid, wchar_t* pName)
 	}
 }
 
+void crawlProcesses(DWORD pid)
+{
+	std::wstring noProcName;
+	crawlProcesses(pid, noProcName);
+}
+
 void getHelp()
 {
-	_tprintf(TEXT("Usage: rpcFwManager /[Command]\n\n"));
-	_tprintf(TEXT("The following commands are available:\n\n"));
-	_tprintf(TEXT("install\t\t - configure RPCFWP EventLog & put DLLs in the %%SystemRoot%%\\system32 folder\n"));
-	_tprintf(TEXT("uninstall\t - remove RPCFWP EventLog configuration & remove DLLs from the %%SystemRoot%%\\system32 folder\n"));
-	_tprintf(TEXT("pid\t\t - Protect specified process ID with RPCFWP <no pid protects ALL processes!> \n"));
-	_tprintf(TEXT("process\t\t - Protect specified process by name with RPCFWP <no name protects ALL processes!>\n"));
-	_tprintf(TEXT("unprotect\t - Remove RPCFirewall from any protected process \n"));
-	_tprintf(TEXT("update\t\t - notify the rpcFirewall.dll on configuration changes \n"));
+	_tprintf(TEXT("Usage: rpcFwManager /<Command> [options] \n\n"));
+	_tprintf(TEXT("command:\n"));
+	_tprintf(TEXT("----------\n"));
+	_tprintf(TEXT("install\t\t - configure EventLogs, auditing, put DLLs in the %%SystemRoot%%\\system32 folder.\n"));
+	_tprintf(TEXT("uninstall\t - undo installation changes.\n"));
+	_tprintf(TEXT("protect [options/pid/process]\t- Apply RPC protections according to the configuration file.\n"));
+	_tprintf(TEXT("\tpid <pid>\t- Protect specified process ID with RPCFWP (no pid protects ALL processes!).\n"));
+	_tprintf(TEXT("\tprocess <name>\t- Protect specified process by name with RPCFWP (no name protects ALL processes!).\n"));
+	_tprintf(TEXT("unprotect\t - Remove protections.\n"));
+	_tprintf(TEXT("update\t\t - Notify rpcFirewall.dll on configuration changes.\n"));
+	_tprintf(TEXT("\noptions:\n"));
+	_tprintf(TEXT("--------------\n"));
+	_tprintf(TEXT("fw: apply command for RPC Firewall only (excluding <process/pid>).\n"));
+	_tprintf(TEXT("flt: apply command for RPC Filters only (excluding <process/pid>).\n"));
+	_tprintf(TEXT("all: apply command for RPC Firewall & Filters (excluding <process/pid>).\n"));
 }
 
 void deleteFileFromSysfolder(std::wstring fileName)
@@ -338,9 +465,148 @@ void sendSignalToGlobalEvent(wchar_t* globalEventName, eventSignal eSig)
 	}
 }
 
-void cmdInstall()
+void runCommandBasedOnParam(std::wstring &param, void funcFilter(void), void funcFireWall(void), std::wstring &errMsg)
 {
-	_tprintf(TEXT("installing RPCFW ...\n"));
+	if (param.empty())
+	{
+		funcFilter();
+		funcFireWall();
+	}
+	else
+	{
+		if ((param.find(_T("all")) != std::string::npos) || (param.find(_T("flt")) != std::string::npos))
+		{
+			funcFilter();
+		}
+		else if ((param.find(_T("all")) != std::string::npos) || (param.find(_T("fw")) != std::string::npos))
+		{
+			funcFireWall();
+		}
+		else
+		{
+			_tprintf(errMsg.c_str());
+		}
+	}
+}
+
+void cmdUpdateRPCFW()
+{
+	readConfigAndMapToMemory();
+	WaitForSingleObject(globalUnprotectlEvent, 1000);
+}
+
+void cmdUnprotectRPCFLT()
+{
+	_tprintf(_T("disabling RPCFLT...\n"));
+	if (!setSecurityPrivilege(_T("SeSecurityPrivilege")))
+	{
+		_tprintf(_T("Error: could not obtain SeSecurityPrivilege.\n"));
+		return;
+	}
+	deleteAllRPCFilters();
+}
+
+void createRPCFiltersFromConfiguration()
+{
+	DWORD bytesRead = 0;
+	std::string confBuf(readConfigFile(&bytesRead));
+
+	unsigned int lineNum = 0;
+
+	if (bytesRead > 0)
+	{
+		std::stringstream configStream(confBuf);
+		std::wstring confLineString;
+		char configLine[256];
+
+		configLinesVector confLines;
+
+		while (configStream.getline(configLine, 256))
+		{
+			confLineString = StringToWString(configLine);
+			confLineString += L" ";
+			LineConfig lineConfig = {};
+
+			lineConfig.opnum = extractOpNumFilterFromConfigLine(confLineString);
+			lineConfig.uuid = extractUUIDFilterFromConfigLine(confLineString);
+			lineConfig.source_addr = extractAddressFromConfigLine(confLineString);
+			lineConfig.policy = extractPolicyFromConfigLine(confLineString);
+
+			confLines.push_back(std::make_pair(confLineString, lineConfig));
+		}
+
+		createRPCFilterFromTextLines(confLines);
+	}
+}
+
+void recreateRPCFilters()
+{
+	cmdUnprotectRPCFLT();
+	createRPCFiltersFromConfiguration();
+}
+
+void cmdProtectRPCFLT()
+{
+	recreateRPCFilters();
+}
+
+void cmdUpdateRPCFLT()
+{
+	recreateRPCFilters();
+}
+
+void cmdUpdate(std::wstring& param)
+{
+	std::wstring errMsg = _T("usage: /update <fw/flt/all>\n");
+	runCommandBasedOnParam(param, cmdUpdateRPCFLT, cmdUpdateRPCFW, errMsg);
+}
+
+void cmdPid(int procNum)
+{
+	elevateCurrentProcessToSystem();
+	createAllGloblEvents();
+	readConfigAndMapToMemory();
+
+	if (procNum > 0)
+	{
+		_tprintf(TEXT("Enabling RPCFW for process : %d\n"), procNum);
+		crawlProcesses(procNum);
+	}
+	else
+	{
+		_tprintf(TEXT("Enabling RPCFW for ALL processes\n"));
+		crawlProcesses(0);
+	}
+}
+
+void cmdUnprotectRPCFW()
+{
+	_tprintf(TEXT("Dispatching unprotect request...\n"));
+	sendSignalToGlobalEvent((wchar_t*)GLOBAL_RPCFW_EVENT_UNPROTECT, eventSignal::signalSetEvent);
+}
+
+void cmdUnprotect(std::wstring& param)
+{
+	std::wstring errMsg = _T("usage: /unprotect <fw/flt/all>\n");
+	runCommandBasedOnParam(param, cmdUnprotectRPCFLT , cmdUnprotectRPCFW, errMsg);
+}
+
+void cmdInstallRPCFLT()
+{
+	_tprintf(TEXT("installing RPCFLT Provider...\n"));
+	installRPCFWProvider();
+	_tprintf(TEXT("enabling RPCFLT...\n"));
+	if (!setSecurityPrivilege(TEXT("SeSecurityPrivilege")))
+	{
+		_tprintf(TEXT("Error: could not obtain SeSecurityPrivilege.\n"));
+		return;
+	}
+	enableAuditingForRPCFilters();
+}
+
+void cmdInstallRPCFW()
+{
+	_tprintf(TEXT("installing RPCFW...\n"));
 	elevateCurrentProcessToSystem();
 	
 	writeFileToSysfolder(getFullPathOfFile(std::wstring(RPC_FW_DLL_NAME)), RPC_FW_DLL_NAME);
@@ -349,57 +615,37 @@ void cmdInstall()
 	addEventSource();
 }
 
-void cmdUpdate()
+void cmdProtectRPCFW()
 {
-	readConfigAndMapToMemory();
+	_tprintf(TEXT("Enabling RPCFW for ALL processes\n"));
+	crawlProcesses(0);
 }
 
-void cmdPid(int argc, wchar_t* argv[])
+void cmdProtect(std::wstring &param)
 {
-	elevateCurrentProcessToSystem();
-	createAllGloblEvents();
-	readConfigAndMapToMemory();
-	DWORD procNum = 0;
-	if (argc > 2)
-	{
-		procNum = std::stoi((std::wstring)argv[2], nullptr, 10);
-		_tprintf(TEXT("Enabling RPCFW for process : %d\n"), procNum);
-		crawlProcesses(procNum, nullptr);
-	}
-	else
-	{
-		_tprintf(TEXT("Enabling RPCFW for ALL processes\n"));
-		crawlProcesses(0, nullptr);
-	}
+	std::wstring errMsg = _T("usage: /protect <fw/flt/all>\n");
+	runCommandBasedOnParam(param, cmdProtectRPCFLT, cmdProtectRPCFW, errMsg);
 }
 
-void cmdUnprotect()
-{
-	elevateCurrentProcessToSystem();
-	_tprintf(TEXT("Dispatching unprotect request...\n"));
-	sendSignalToGlobalEvent((wchar_t*)GLOBAL_RPCFW_EVENT_UNPROTECT, eventSignal::signalSetEvent);
-}
-
-void cmdProcess(int argc, wchar_t* argv[])
+void cmdProcess(std::wstring &processName)
 {
 	createAllGloblEvents();
 	elevateCurrentProcessToSystem();
 	readConfigAndMapToMemory();
-	if (argc > 2)
+	if (!processName.empty())
 	{
-		_tprintf(TEXT("Enabling RPCFW for process : %s\n"), argv[2]);
-		crawlProcesses(17, (wchar_t*)argv[2]);
+		_tprintf(TEXT("Enabling RPCFW for process : %s\n"), processName.c_str());
+		crawlProcesses(17, processName);
 	}
 	else
 	{
 		_tprintf(TEXT("Enabling RPCFW for ALL processes\n"));
-		crawlProcesses(0, nullptr);
+		crawlProcesses(0, processName);
 	}
 }
 
-void cmdUninstall()
+void cmdUninstallRPCFW()
 {
-	cmdUnprotect();
 	_tprintf(TEXT("Uninstalling RPCFW ...\n"));
 
 	deleteFileFromSysfolder(RPC_FW_DLL_NAME);
@@ -415,6 +661,24 @@ void cmdUninstall()
 	}
 }
 
+void cmdUninstallRPCFLT()
+{
+	cmdUnprotectRPCFLT();
+	disableAuditingForRPCFilters();
+}
+
+void cmdUninstall(std::wstring &param)
+{
+	std::wstring errMsg = _T("usage: /uninstall <fw/flt/all>\n");
+	runCommandBasedOnParam(param, cmdUninstallRPCFLT, cmdUninstallRPCFW, errMsg);
+}
+
+void cmdInstall(std::wstring &param)
+{
+	std::wstring errMsg = _T("usage: /install <fw/flt/all>\n");
+	runCommandBasedOnParam(param, cmdInstallRPCFLT, cmdInstallRPCFW, errMsg);
+}
+
 int _tmain(int argc, wchar_t* argv[])
 {
 	_tprintf(TEXT("rpcFwMannager started...\n"));
@@ -422,33 +686,54 @@ int _tmain(int argc, wchar_t* argv[])
 	if (argc > 1)
 	{
 		std::wstring cmmd(argv[1]);
+		std::wstring param;
+		if (argc > 2)
+		{
+			param = std::wstring(argv[2]);
+		}
 
 		if (cmmd.find(_T("/uninstall")) != std::string::npos)
 		{
-			cmdUninstall();
+			cmdUninstall(param);
 		}
 		else if (cmmd.find(_T("/unprotect")) != std::string::npos)
 		{
-			cmdUnprotect();
+			cmdUnprotect(param);
+		}
+		else if (cmmd.find(_T("/protect")) != std::string::npos)
+		{
+			if (param.find(_T("pid")) != std::string::npos)
+			{
+				if (argc > 3) {
+					int procNum = std::stoi((std::wstring)argv[3], nullptr, 10);
+					cmdPid(procNum);
+				}
+				else
+				{
+					cmdPid(0);
+				}		
+				WaitForSingleObject(globalUnprotectlEvent, 1000);
+			}
+			else if (param.find(_T("process")) != std::string::npos)
+			{
+				std::wstring processName;
+				if (argc > 3) {
+					processName = argv[3];
+				}
+				cmdProcess(processName);
+			}
+			else
+			{
+				cmdProtect(param);
+			}
 		}
 		else if (cmmd.find(_T("/update")) != std::string::npos) 
 		{
-			cmdUpdate();
-			WaitForSingleObject(globalUnprotectlEvent, 1000);
+			cmdUpdate(param);
 		}
 		else if (cmmd.find(_T("/install")) != std::string::npos)
 		{
-			cmdInstall();
-		}
-		else if (cmmd.find(_T("/pid")) != std::string::npos)
-		{
-			cmdPid(argc,  argv);
-			WaitForSingleObject(globalUnprotectlEvent, 1000);
-		}
-		else if (cmmd.find(_T("/process")) != std::string::npos)
-		{
-			cmdProcess(argc, argv);
-			WaitForSingleObject(globalUnprotectlEvent, 1000);
+			cmdInstall(param);
 		}
 		else
 		{

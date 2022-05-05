@@ -8,7 +8,7 @@
 #include <algorithm>
 
 HANDLE globalMappedMemory = nullptr;
-HANDLE globalUnprotectlEvent = nullptr;
+HANDLE globalUnprotectEvent = nullptr;
 
 enum class eventSignal {signalSetEvent, signalResetEvent};
 
@@ -103,11 +103,25 @@ OpNumFilter extractOpNumFilterFromConfigLine(const std::wstring& confLine)
 	}
 }
 
+SIDFilter extractSIDFromConfigLine(const std::wstring& confLine)
+{
+	const std::wstring sidString = extractKeyValueFromConfigLine(confLine, _T("sid:"));
+
+	return sidString.empty() ? SIDFilter{} : SIDFilter{ sidString};
+}
+
 bool extractActionFromConfigLine(const std::wstring& confLine)
 {
 	std::wstring action = extractKeyValueFromConfigLine(confLine, _T("action:"));
 
 	return action.find(_T("block")) == std::string::npos;
+}
+
+protocolFilter extractProtoclFromConfigLine(const std::wstring& confLine)
+{
+	const std::wstring protocol = extractKeyValueFromConfigLine(confLine, _T("prot"));
+
+	return protocol.empty() ? protocolFilter{} : protocolFilter{ protocol};
 }
 
 bool extractAuditFromConfigLine(const std::wstring& confLine)
@@ -330,7 +344,7 @@ HANDLE createGlobalEvent(bool manualReset,bool initialState, wchar_t* eventName)
 
 void createAllGloblEvents()
 {
-	globalUnprotectlEvent = createGlobalEvent(true, false, (wchar_t*)GLOBAL_RPCFW_EVENT_UNPROTECT);
+	globalUnprotectEvent = createGlobalEvent(true, false, (wchar_t*)GLOBAL_RPCFW_EVENT_UNPROTECT);
 }
 
 HANDLE mapNamedMemory()
@@ -467,7 +481,7 @@ void sendSignalToGlobalEvent(wchar_t* globalEventName, eventSignal eSig)
 
 void runCommandBasedOnParam(std::wstring &param, void funcFilter(void), void funcFireWall(void), std::wstring &errMsg)
 {
-	if (param.empty())
+	if (param.empty() || (param.find(_T("all")) != std::string::npos))
 	{
 		funcFilter();
 		funcFireWall();
@@ -492,7 +506,7 @@ void runCommandBasedOnParam(std::wstring &param, void funcFilter(void), void fun
 void cmdUpdateRPCFW()
 {
 	readConfigAndMapToMemory();
-	WaitForSingleObject(globalUnprotectlEvent, 1000);
+	WaitForSingleObject(globalUnprotectEvent, 1000);
 }
 
 void cmdUnprotectRPCFLT()
@@ -531,6 +545,8 @@ void createRPCFiltersFromConfiguration()
 			lineConfig.uuid = extractUUIDFilterFromConfigLine(confLineString);
 			lineConfig.source_addr = extractAddressFromConfigLine(confLineString);
 			lineConfig.policy = extractPolicyFromConfigLine(confLineString);
+			lineConfig.sid = extractSIDFromConfigLine(confLineString);
+			lineConfig.protocol = extractProtoclFromConfigLine(confLineString);
 
 			confLines.push_back(std::make_pair(confLineString, lineConfig));
 		}
@@ -642,6 +658,8 @@ void cmdProcess(std::wstring &processName)
 		_tprintf(TEXT("Enabling RPCFW for ALL processes\n"));
 		crawlProcesses(0, processName);
 	}
+
+	WaitForSingleObject(globalUnprotectEvent, 1000);
 }
 
 void cmdUninstallRPCFW()
@@ -691,7 +709,6 @@ int _tmain(int argc, wchar_t* argv[])
 		{
 			param = std::wstring(argv[2]);
 		}
-
 		if (cmmd.find(_T("/uninstall")) != std::string::npos)
 		{
 			cmdUninstall(param);
@@ -712,7 +729,6 @@ int _tmain(int argc, wchar_t* argv[])
 				{
 					cmdPid(0);
 				}		
-				WaitForSingleObject(globalUnprotectlEvent, 1000);
 			}
 			else if (param.find(_T("process")) != std::string::npos)
 			{
@@ -726,6 +742,7 @@ int _tmain(int argc, wchar_t* argv[])
 			{
 				cmdProtect(param);
 			}
+			WaitForSingleObject(globalUnprotectlEvent, 1000);
 		}
 		else if (cmmd.find(_T("/update")) != std::string::npos) 
 		{

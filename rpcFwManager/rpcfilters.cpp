@@ -10,6 +10,8 @@
 #include <accctrl.h>
 #include <aclapi.h>
 #include <algorithm>
+#include <iostream>
+#include <fstream>
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -28,7 +30,13 @@ struct FwHandleWrapper
 		if (h != nullptr)
 		{
 			FwpmEngineClose0(h);
+			h = nullptr;
 		}
+	}
+	FwHandleWrapper& operator=(FwHandleWrapper&& const other)
+	{
+		h = std::move(other.h);
+		return *this;
 	}
 
 	HANDLE h = nullptr;
@@ -41,7 +49,8 @@ struct EnumHandleWrapper
 		if (enumH != nullptr)
 		{
 			FwpmFilterDestroyEnumHandle0(engineH,enumH);
-			FwpmEngineClose0(engineH);
+			HANDLE engineH = nullptr;
+			HANDLE enumH = nullptr;
 		}
 	}
 
@@ -265,52 +274,60 @@ void installRPCFWProvider()
 
 }
 
+void setLocalRPCSecurityPolicyInReg(unsigned long auditInformation)
+{
+	unsigned long auditInfo = auditInformation;
+	HKEY    hRegKey = nullptr;
+	// Create RPC policy registry key
+	if (RegCreateKeyEx(HKEY_LOCAL_MACHINE, L"SOFTWARE\\Policies\\Microsoft\\Windows NT\\Rpc", 0, nullptr, REG_OPTION_NON_VOLATILE, KEY_CREATE_SUB_KEY | KEY_READ | KEY_WRITE | KEY_SET_VALUE, nullptr, &hRegKey, nullptr) != ERROR_SUCCESS)
+	{
+		_tprintf(TEXT("ERROR: Couldn't create RPC policy registry key: [%d].\n"), GetLastError());
+		return;
+	}
+
+	// Set RPC audit information
+	if (RegSetValueEx(hRegKey, _T("StateInformation"), 0, REG_DWORD, (LPBYTE)&auditInfo, sizeof(auditInfo)) != ERROR_SUCCESS)
+	{
+		_tprintf(TEXT("ERROR: setting value to StateInformation failed: [%d].\n"), GetLastError());
+	}
+
+	RegCloseKey(hRegKey);
+}
+
+void writeAuditFile()
+{
+	wchar_t  destPath[INFO_BUFFER_SIZE];
+	if (!GetSystemDirectory(destPath, INFO_BUFFER_SIZE))
+	{
+		_tprintf(TEXT("ERROR: Couldn't get the system directory [%d].\n"), GetLastError());
+		return;
+	}
+
+	std::wstring destPathStr = destPath;
+	destPathStr += TEXT("\\GroupPolicy\\Machine\\Microsoft\\Windows NT\\Audit\\audit.csv");
+
+	std::ofstream auditFileStream(destPathStr);
+	if (auditFileStream.bad())
+	{
+		_tprintf(TEXT("ERROR: Couldn't open audit file for writing [%s].\n"), destPathStr);
+		return;
+	}
+
+	auditFileStream << "Machine Name,Policy Target,Subcategory,Subcategory GUID,Inclusion Setting,Exclusion Setting,Setting Value\n, System, Audit RPC Events, {0cce922e-69ae-11d9-bed3-505054503030 },Success and Failure, ,3" << std::endl;
+	auditFileStream.close();
+}
+
 void enableAuditingForRPCFilters()
 {
 	updateAuditingForRPCFilters(3);
+	setLocalRPCSecurityPolicyInReg(3);
+	writeAuditFile();
 }
 
 void disableAuditingForRPCFilters()
 {
 	updateAuditingForRPCFilters(4);
-}
-
-void addIPv4Filter(HANDLE eh, const char* remoteIP, GUID layerkey)
-{
-	FWPM_FILTER0			fwpFilter;
-	DWORD					result = ERROR_SUCCESS;
-	FWPM_FILTER_CONDITION0	fwpConditionIPv4;
-	UINT32					ipv4;
-
-	inet_pton(AF_INET, remoteIP, &ipv4);
-
-	ZeroMemory(&fwpConditionIPv4, sizeof(fwpConditionIPv4));
-	fwpConditionIPv4.matchType = FWP_MATCH_EQUAL;
-	fwpConditionIPv4.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS_V4;
-	fwpConditionIPv4.conditionValue.type = FWP_UINT32;
-	fwpConditionIPv4.conditionValue.uint32 = ipv4;
-
-	ZeroMemory(&fwpFilter, sizeof(fwpFilter));
-	fwpFilter.layerKey = layerkey;
-	fwpFilter.action.type = FWP_ACTION_BLOCK;
-	fwpFilter.weight.type = FWP_EMPTY;
-	fwpFilter.numFilterConditions = 1;
-	fwpFilter.displayData.name = (wchar_t*)L"RPC filter block ip";
-	fwpFilter.displayData.description = (wchar_t*)L"Filter to block all inbound connections from an ip";
-	fwpFilter.filterCondition = &fwpConditionIPv4;
-	fwpFilter.providerKey = &RPCFWProviderGUID;
-
-	fwpFilter.subLayerKey = FWPM_SUBLAYER_RPC_AUDIT;
-	fwpFilter.rawContext = 1;
-	fwpFilter.flags = FWPM_FILTER_FLAG_PERSISTENT;
-
-	_tprintf(_T("Adding filter\n"));
-	result = FwpmFilterAdd0(eh, &fwpFilter, NULL, NULL);
-
-	if (result != ERROR_SUCCESS)
-		_tprintf(_T("FwpmFilterAdd0 failed. Return value: 0x%x.\n"), result);
-	else
-		_tprintf(_T("Filter added successfully.\n"));
+	setLocalRPCSecurityPolicyInReg(4);
 }
 
 FWPM_FILTER_CONDITION0 createSDCondition(const std::wstring& sidString)
@@ -353,7 +370,7 @@ FWPM_FILTER_CONDITION0 createUUIDCondition(std::wstring& uuidString)
 	RPC_STATUS ret = UuidFromString((RPC_WSTR)uuidString.c_str(), &interfaceUUID);
 	if (ret != RPC_S_OK)
 	{
-		_tprintf(_T("Failed to convert UUID from string: %d\n"),ret);
+		_tprintf(_T("Failed to convert UUID:%s from string: %d\n"), uuidString,ret);
 	}
 
 	uuidCondition.matchType = FWP_MATCH_EQUAL;
@@ -366,23 +383,23 @@ FWPM_FILTER_CONDITION0 createUUIDCondition(std::wstring& uuidString)
 
 FWPM_FILTER_CONDITION0 createProtocolCondition(std::wstring& protocol)
 {
-	std::transform(protocol.begin(), protocol.end(), protocol.begin(), ::toupper);
+	std::transform(protocol.begin(), protocol.end(), protocol.begin(), ::tolower);
 	FWPM_FILTER_CONDITION0 protoclCondition = { 0 };
 	unsigned int uintProtocl = 0;
 
-	if (protocol.find(_T("TCP")) != std::string::npos)
+	if (protocol.find(_T("ncacn_ip_tcp")) != std::string::npos)
 	{
 		uintProtocl = RPC_PROTSEQ_TCP;
 	}
-	else if ((protocol.find(_T("NP")) != std::string::npos))
+	else if ((protocol.find(_T("ncacn_np")) != std::string::npos))
 	{
 		uintProtocl = RPC_PROTSEQ_NMP;
 	}
-	else if (protocol.find(_T("HTTP")) != std::string::npos)
+	else if (protocol.find(_T("ncacn_http")) != std::string::npos)
 	{
 		uintProtocl = RPC_PROTSEQ_HTTP;
 	}
-	else if (protocol.find(_T("LRPC")) != std::string::npos)
+	else if (protocol.find(_T("ncalrpc")) != std::string::npos)
 	{
 		_tprintf(_T("Unknown protocl found in configutaion: %s\n"), protocol);
 		uintProtocl = RPC_PROTSEQ_LRPC;
@@ -398,25 +415,6 @@ FWPM_FILTER_CONDITION0 createProtocolCondition(std::wstring& protocol)
 	return protoclCondition;
 }
 
-FWPM_FILTER_CONDITION0 createEffectivelyAnyCondition()
-{
-	FWPM_FILTER_CONDITION0 uuidCondition = { 0 };
-	UUID interfaceUUID;
-
-	RPC_STATUS ret = UuidFromString((RPC_WSTR)L"00000000-0000-0000-0000-000000000000", &interfaceUUID);
-	if (ret != RPC_S_OK)
-	{
-		_tprintf(_T("Failed to convert UUID from string: %d\n"), ret);
-	}
-
-	uuidCondition.matchType = FWP_MATCH_GREATER_OR_EQUAL;
-	uuidCondition.fieldKey = FWPM_CONDITION_RPC_AUTH_LEVEL;
-	uuidCondition.conditionValue.type = FWP_UINT8;
-	uuidCondition.conditionValue.byteArray16 = 0;
-
-	return uuidCondition;
-}
-
 FWPM_FILTER_CONDITION0 createIPv4Condition(std::wstring &remoteIP)
 {
 	FWPM_FILTER_CONDITION0	ipv4Condition = {0};
@@ -430,6 +428,18 @@ FWPM_FILTER_CONDITION0 createIPv4Condition(std::wstring &remoteIP)
 	ipv4Condition.conditionValue.uint32 = ipv4;
 
 	return ipv4Condition;
+}
+
+FWPM_FILTER_CONDITION0 createEffectivelyAnyCondition()
+{
+	FWPM_FILTER_CONDITION0 uuidCondition = { 0 };
+
+	uuidCondition.matchType = FWP_MATCH_GREATER_OR_EQUAL;
+	uuidCondition.fieldKey = FWPM_CONDITION_RPC_IF_VERSION;
+	uuidCondition.conditionValue.type = FWP_UINT16;
+	uuidCondition.conditionValue.uint16 = 0;
+
+	return uuidCondition;
 }
 
 HANDLE openFwEngineHandle()
@@ -457,18 +467,24 @@ HANDLE openFwEngineHandle()
 	return engineHandle;
 }
 
-void createRPCFilterFromConfigLine(HANDLE fwH, LineConfig confLine, std::wstring &filterName, std::wstring &filterDescription, unsigned long long weight)
+void createRPCFilterFromConfigLine( LineConfig confLine, std::wstring &filterName, std::wstring &filterDescription, unsigned long long weight)
 {
 	FwHandleWrapper fwhw; 
 	fwhw.h = openFwEngineHandle();
 	conditionsVector conditions;
 
+	bool existsSourceAddr = false;
+	bool existsUUID = false;
+	bool anyFilter = false;
+
 	if (confLine.source_addr.has_value())
 	{
+		existsSourceAddr = true;
 		conditions.push_back(createIPv4Condition(confLine.source_addr.value()));
 	}
 	if (confLine.uuid.has_value())
 	{
+		existsUUID = true;
 		conditions.push_back(createUUIDCondition(confLine.uuid.value()));
 	}
 	if (confLine.sid.has_value())
@@ -479,40 +495,54 @@ void createRPCFilterFromConfigLine(HANDLE fwH, LineConfig confLine, std::wstring
 	{
 		conditions.push_back(createProtocolCondition(confLine.protocol.value()));
 	}
-	if (conditions.size() == 0 && !confLine.opnum.has_value())
+	if (conditions.size() == 0)
 	{
-		conditions.push_back(createEffectivelyAnyCondition());
+		anyFilter = true;
+		// An "ANY" condition may cause faults with certain RPC services.
+		//conditions.push_back(createEffectivelyAnyCondition());
 	}
+
+	FWPM_FILTER0 fwpFilter = {0};
+		
+	fwpFilter.layerKey = FWPM_LAYER_RPC_UM;
+	fwpFilter.subLayerKey = FWPM_SUBLAYER_UNIVERSAL;
+	fwpFilter.action.type = (confLine.policy.allow) ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
+	fwpFilter.weight.type = FWP_UINT64;
+	fwpFilter.weight.uint64 = &weight;
+	fwpFilter.displayData.name = (wchar_t*)filterName.c_str();
+	fwpFilter.displayData.description = (wchar_t*)filterDescription.c_str();
+	fwpFilter.numFilterConditions = conditions.size();
+	fwpFilter.flags = FWPM_FILTER_FLAG_PERSISTENT;
+	fwpFilter.providerKey = &RPCFWProviderGUID;
+	
+	if (confLine.policy.audit)
+	{
+		fwpFilter.subLayerKey = FWPM_SUBLAYER_RPC_AUDIT;
+		fwpFilter.rawContext = 1;
+
+	}
+	
 	if (conditions.size() > 0)
 	{
-		FWPM_FILTER0 fwpFilter = { 0 };
-
-		fwpFilter.layerKey = FWPM_LAYER_RPC_UM;
-		fwpFilter.action.type = (confLine.policy.allow) ? FWP_ACTION_PERMIT : FWP_ACTION_BLOCK;
-		fwpFilter.weight.type = FWP_UINT64;
-		fwpFilter.weight.uint64 = &weight;
-		fwpFilter.numFilterConditions = conditions.size();
 		fwpFilter.filterCondition = &conditions[0];
-		fwpFilter.displayData.name = (wchar_t*)filterName.c_str();
-		fwpFilter.displayData.description = (wchar_t*)filterDescription.c_str();
-		fwpFilter.providerKey = &RPCFWProviderGUID;
-		fwpFilter.flags = FWPM_FILTER_FLAG_PERSISTENT;
+	}
 
-		if (confLine.policy.audit)
-		{
-			fwpFilter.subLayerKey = FWPM_SUBLAYER_RPC_AUDIT;
-			fwpFilter.rawContext = 1;
-			
-		}
+	DWORD result = FwpmFilterAdd0(fwhw.h, &fwpFilter, nullptr, nullptr);
 
-		//_tprintf(_T("Adding filter %s, %s\n"), filterName.c_str(), filterDescription.c_str());
+	if (result != ERROR_SUCCESS)
+	{
+		_tprintf(_T("FwpmFilterAdd0 failed. Return value: 0x%x.\n"), result);
+		return;
+	}
 
-		DWORD result = FwpmFilterAdd0(fwhw.h, &fwpFilter, nullptr, nullptr);
+	if (!anyFilter && !existsUUID)
+	{
+		_tprintf(_T("WARNING: Filters without explicit UUIDs may cause faults: %s.\n"), filterDescription.c_str());
+	}
 
-		if (result != ERROR_SUCCESS)
-			_tprintf(_T("FwpmFilterAdd0 failed. Return value: 0x%x.\n"), result);
-		//else
-		//	_tprintf(_T("Filter added successfully.\n"));
+	if (existsSourceAddr)
+	{
+		_tprintf(_T("WARNING: source address filters do not protect RPC traffic over named pipes: %s.\n"), filterDescription.c_str());
 	}
 }
 
@@ -520,35 +550,17 @@ void createRPCFilterFromTextLines(configLinesVector configsVector)
 {
 	if (configsVector.size() > 0)
 	{
-		FwHandleWrapper fwhw; 
-		fwhw.h = openFwEngineHandle();
-
 		unsigned int weight = 0x00FFFFFF;
 
-		if (fwhw.h != nullptr)
+		for (int i = 0; i < configsVector.size(); i++)
 		{
-			for (int i = 0; i < configsVector.size(); i++)
-			{
-				std::wstring confLineStr = configsVector[i].first;
-				LineConfig confLine = configsVector[i].second;
+			std::wstring confLineStr = configsVector[i].first;
+			LineConfig confLine = configsVector[i].second;
 
-				std::wstring filterName = L"RPC Filter " + std::to_wstring(i + 1);
-
-				createRPCFilterFromConfigLine(fwhw.h, confLine, filterName, confLineStr, weight--);
-			}
+			std::wstring filterName = L"RPC Filter " + std::to_wstring(i + 1);
+			createRPCFilterFromConfigLine(confLine, filterName, confLineStr, weight--);
 		}
 	}
-}
-
-void createIPBlockRPCFilter(std::string &ipAddressStr)
-{
-	FwHandleWrapper engineHandle;
-	engineHandle.h = openFwEngineHandle();
-	if (engineHandle.h == nullptr)
-	{
-		return;
-	}
-	addIPv4Filter(engineHandle.h, ipAddressStr.c_str(), FWPM_LAYER_RPC_UM);
 }
 
 HANDLE returnEnumHandleToAllRPCFilters(HANDLE eh)
@@ -557,6 +569,7 @@ HANDLE returnEnumHandleToAllRPCFilters(HANDLE eh)
 
 	fwEnumTemplate.providerKey = &RPCFWProviderGUID;
 	fwEnumTemplate.layerKey = FWPM_LAYER_RPC_UM;
+
 	fwEnumTemplate.enumType = FWP_FILTER_ENUM_OVERLAPPING;
 	fwEnumTemplate.flags = FWP_FILTER_ENUM_FLAG_SORTED;
 	fwEnumTemplate.providerContextTemplate = nullptr;
@@ -579,13 +592,14 @@ HANDLE returnEnumHandleToAllRPCFilters(HANDLE eh)
 
 void deleteAllRPCFilters()
 {
-	HANDLE engineHandle = openFwEngineHandle();
+	FwHandleWrapper fwhw;
+	fwhw.h = openFwEngineHandle();
 
-	if (engineHandle != nullptr)
+	if (fwhw.h != nullptr)
 	{
 		EnumHandleWrapper ehw = {0};
-		ehw.engineH = engineHandle;
-		ehw.enumH = returnEnumHandleToAllRPCFilters(engineHandle);
+		ehw.engineH = fwhw.h;
+		ehw.enumH = returnEnumHandleToAllRPCFilters(fwhw.h);
 		
 		if (ehw.enumH != nullptr)
 		{
@@ -601,7 +615,7 @@ void deleteAllRPCFilters()
 
 			for (unsigned int entryNum = 0; entryNum < numEntries; entryNum++)
 			{
-				ret = FwpmFilterDeleteById0(engineHandle, entries[entryNum]->filterId);
+				ret = FwpmFilterDeleteById0(fwhw.h, entries[entryNum]->filterId);
 				if (ret != ERROR_SUCCESS)
 				{
 					_tprintf(_T("Falied to remove filter: %s : 0x%x\n"), entries[entryNum]->displayData.description, ret);
@@ -613,13 +627,14 @@ void deleteAllRPCFilters()
 
 void printAllRPCFilters()
 {
-	HANDLE engineHandle = openFwEngineHandle();
+	FwHandleWrapper engineHandle;
+	engineHandle.h = openFwEngineHandle();
 
-	if (engineHandle != nullptr)
+	if (engineHandle.h != nullptr)
 	{
 		EnumHandleWrapper ehw = { 0 };
-		ehw.engineH = engineHandle;
-		ehw.enumH = returnEnumHandleToAllRPCFilters(engineHandle);
+		ehw.engineH = engineHandle.h;
+		ehw.enumH = returnEnumHandleToAllRPCFilters(engineHandle.h);
 
 		if (ehw.enumH != nullptr)
 		{

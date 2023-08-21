@@ -330,6 +330,17 @@ void disableAuditingForRPCFilters()
 	setLocalRPCSecurityPolicyInReg(4);
 }
 
+FWP_BYTE_ARRAY16* allocateFWPByteArray16(const BYTE* byteArray)
+{
+	FWP_BYTE_ARRAY16* byteArrayPtr = static_cast<FWP_BYTE_ARRAY16*>(malloc(sizeof(FWP_BYTE_ARRAY16)));
+	if (byteArrayPtr)
+	{
+		memcpy(byteArrayPtr->byteArray16, byteArray, sizeof(byteArrayPtr->byteArray16));
+	}
+
+	return byteArrayPtr;
+}
+
 FWPM_FILTER_CONDITION0 createSDCondition(const std::wstring& sidString)
 {
 	FWPM_FILTER_CONDITION0 sidCondition = { 0 };
@@ -373,10 +384,12 @@ FWPM_FILTER_CONDITION0 createUUIDCondition(std::wstring& uuidString)
 		_tprintf(_T("Failed to convert UUID:%s from string: %d\n"), uuidString,ret);
 	}
 
+	FWP_BYTE_ARRAY16* allocatedBA16 = allocateFWPByteArray16((BYTE*) & interfaceUUID);
+
 	uuidCondition.matchType = FWP_MATCH_EQUAL;
 	uuidCondition.fieldKey = FWPM_CONDITION_RPC_IF_UUID;
 	uuidCondition.conditionValue.type = FWP_BYTE_ARRAY16_TYPE;
-	uuidCondition.conditionValue.byteArray16 = (FWP_BYTE_ARRAY16*)&interfaceUUID;
+	uuidCondition.conditionValue.byteArray16 = allocatedBA16;
 
 	return uuidCondition;
 }
@@ -386,6 +399,8 @@ FWPM_FILTER_CONDITION0 createProtocolCondition(std::wstring& protocol)
 	std::transform(protocol.begin(), protocol.end(), protocol.begin(), ::tolower);
 	FWPM_FILTER_CONDITION0 protoclCondition = { 0 };
 	unsigned int uintProtocl = 0;
+
+	protoclCondition.matchType = FWP_MATCH_EQUAL;
 
 	if (protocol.find(_T("ncacn_ip_tcp")) != std::string::npos)
 	{
@@ -399,20 +414,105 @@ FWPM_FILTER_CONDITION0 createProtocolCondition(std::wstring& protocol)
 	{
 		uintProtocl = RPC_PROTSEQ_HTTP;
 	}
+	else if (protocol.find(_T("remote")) != std::string::npos)
+	{
+		uintProtocl = RPC_PROTSEQ_LRPC;
+		protoclCondition.matchType = FWP_MATCH_NOT_EQUAL;
+	}
 	else if (protocol.find(_T("ncalrpc")) != std::string::npos)
 	{
 		_tprintf(_T("Unknown protocl found in configutaion: %s\n"), protocol);
 		uintProtocl = RPC_PROTSEQ_LRPC;
 	}
 	else return protoclCondition;
-
-
-	protoclCondition.matchType = FWP_MATCH_EQUAL;
+		
 	protoclCondition.fieldKey = FWPM_CONDITION_RPC_PROTOCOL;
 	protoclCondition.conditionValue.type = FWP_UINT8;
 	protoclCondition.conditionValue.uint8 = uintProtocl;
 
 	return protoclCondition;
+}
+
+bool isIpv4Addr(std::wstring& testIp)
+{
+	UINT32 ipv4;
+
+ 	if (InetPton(AF_INET, testIp.c_str(), &ipv4) <= 0) return false;
+
+	return true;
+}
+
+bool isIPv4CIDR(std::wstring& testIp)
+{
+	UINT32 ipv4;
+
+	size_t slashPos = testIp.find(L"/");
+	if (slashPos == std::string::npos) {
+		return false;
+	}
+
+	unsigned int prefixLength;
+
+	try {
+		prefixLength = std::stoi(testIp.substr(slashPos + 1));
+	}
+	catch (const std::exception&) {
+		return false;
+	}
+
+	std::wstring ipOnly = testIp.substr(0, slashPos);
+	if (!isIpv4Addr(ipOnly) ||  prefixLength > 32)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool isIpv6Address(const std::wstring& testIp)
+{
+	BYTE ipv6[16];
+
+	if (InetPton(AF_INET6, testIp.c_str(), &ipv6) <= 0) return false;
+
+	return true;
+
+}
+
+bool isIPv6CIDR(std::wstring& testIp)
+{
+	UINT8 ipv6[16];
+
+	size_t slashPos = testIp.find(L"/");
+	if (slashPos == std::string::npos) {
+		return false;
+	}
+
+	unsigned int prefixLength;
+
+	try {
+		prefixLength = std::stoi(testIp.substr(slashPos + 1));
+	}
+	catch (const std::exception&) {
+		return false;
+	}
+
+	std::wstring ipOnly = testIp.substr(0, slashPos);
+	if (!isIpv6Address(ipOnly) || prefixLength > 128)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+UINT32 generateBitMask(UINT32 numOfBits) {
+	UINT32 bitmask;
+
+	bitmask = (~((1 << (32 - numOfBits)) - 1));
+
+
+	return bitmask;
 }
 
 FWPM_FILTER_CONDITION0 createIPv4Condition(std::wstring &remoteIP)
@@ -428,6 +528,71 @@ FWPM_FILTER_CONDITION0 createIPv4Condition(std::wstring &remoteIP)
 	ipv4Condition.conditionValue.uint32 = ipv4;
 
 	return ipv4Condition;
+}
+
+FWPM_FILTER_CONDITION0 createIPv4CIDRCondition(std::wstring& remoteIPCIDR)
+{
+	std::wstring ipv4;
+	unsigned int prefixLength;
+
+	size_t slashPos = remoteIPCIDR.find(L"/");
+	prefixLength = std::stoi(remoteIPCIDR.substr(slashPos + 1));
+	ipv4 = remoteIPCIDR.substr(0, slashPos);
+
+	UINT32 ipv4Int = 0;
+	UINT32 bitmask = generateBitMask(prefixLength);
+	InetPton(AF_INET, ipv4.c_str(), &ipv4Int);
+
+	UINT32 ipv4IntHostOrder = ntohl(ipv4Int);
+	
+	FWPM_FILTER_CONDITION0	ipv4Condition = { 0 };
+
+	ipv4Condition.matchType = FWP_MATCH_EQUAL;
+	ipv4Condition.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS_V4;
+	ipv4Condition.conditionValue.type = FWP_V4_ADDR_MASK;
+	ipv4Condition.conditionValue.v4AddrMask = new FWP_V4_ADDR_AND_MASK;
+	ipv4Condition.conditionValue.v4AddrMask->addr = ipv4IntHostOrder;
+	ipv4Condition.conditionValue.v4AddrMask->mask = bitmask;
+	
+	return ipv4Condition;
+}
+
+FWPM_FILTER_CONDITION0 createIPv6CIDRCondition(const std::wstring& remoteIPCIDR)
+{
+	std::wstring ipv6;
+	unsigned int prefixLength;
+
+	size_t slashPos = remoteIPCIDR.find(L"/");
+	prefixLength = std::stoi(remoteIPCIDR.substr(slashPos + 1));
+	ipv6 = remoteIPCIDR.substr(0, slashPos);
+
+	FWPM_FILTER_CONDITION0 ipv6Condition = { 0 };
+
+	ipv6Condition.matchType = FWP_MATCH_EQUAL;
+	ipv6Condition.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS_V6;
+	ipv6Condition.conditionValue.type = FWP_V6_ADDR_MASK;
+	ipv6Condition.conditionValue.v6AddrMask = new FWP_V6_ADDR_AND_MASK;
+	InetPton(AF_INET6, ipv6.c_str(), ipv6Condition.conditionValue.v6AddrMask->addr);
+	ipv6Condition.conditionValue.v6AddrMask->prefixLength;
+
+	return ipv6Condition;
+}
+
+FWPM_FILTER_CONDITION0 createIPv6Condition(const std::wstring& remoteIP)
+{
+	FWPM_FILTER_CONDITION0 ipv6Condition = { 0 };
+	FWP_BYTE_ARRAY16 fwpBA16;
+
+	InetPton(AF_INET6, remoteIP.c_str(), &(fwpBA16.byteArray16));
+
+	FWP_BYTE_ARRAY16* allocatedBA16 = allocateFWPByteArray16(fwpBA16.byteArray16);
+
+	ipv6Condition.matchType = FWP_MATCH_EQUAL;
+	ipv6Condition.fieldKey = FWPM_CONDITION_IP_REMOTE_ADDRESS_V6;
+	ipv6Condition.conditionValue.type = FWP_BYTE_ARRAY16_TYPE;
+	ipv6Condition.conditionValue.byteArray16 = allocatedBA16;
+
+	return ipv6Condition;
 }
 
 FWPM_FILTER_CONDITION0 createEffectivelyAnyCondition()
@@ -477,10 +642,33 @@ void createRPCFilterFromConfigLine( LineConfig confLine, std::wstring &filterNam
 	bool existsUUID = false;
 	bool anyFilter = false;
 
-	if (confLine.source_addr.has_value())
+	if (confLine.min_addr.has_value())
 	{
-		existsSourceAddr = true;
-		conditions.push_back(createIPv4Condition(confLine.source_addr.value()));
+		if (isIpv4Addr(confLine.min_addr.value()))
+		{
+			existsSourceAddr = true;
+			conditions.push_back(createIPv4Condition(confLine.min_addr.value()));
+		}
+		else if (isIpv6Address(confLine.min_addr.value()))
+		{
+			existsSourceAddr = true;
+			conditions.push_back(createIPv6Condition(confLine.min_addr.value()));
+		}
+		else if (isIPv4CIDR(confLine.min_addr.value()))
+		{
+			conditions.push_back(createIPv4CIDRCondition(confLine.min_addr.value()));
+			_tprintf(_T("WARNING: CIDR ranges in Filters are highly unreliable: %s.\n"), filterDescription.c_str());
+		}
+		else if (isIPv6CIDR(confLine.min_addr.value()))
+		{
+			conditions.push_back(createIPv6CIDRCondition(confLine.min_addr.value()));
+			_tprintf(_T("WARNING: CIDR ranges in Filters are highly unreliable: %s.\n"), filterDescription.c_str());
+		}
+		else
+		{
+			_tprintf(_T("Malformed address: %s\n"), confLine.min_addr);
+		}
+		
 	}
 	if (confLine.uuid.has_value())
 	{

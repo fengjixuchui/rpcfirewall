@@ -1,11 +1,30 @@
 #pragma once
 
 #include <optional>
+#include <array>
 
+struct AddressRangeIpv4 {
+	uint32_t minAddr;
+	uint32_t maxAddr;
+};
+
+struct AddressRangeIpv6 {
+	std::array<UINT16,8> minAddr;
+	std::array<UINT16,8> maxAddr;
+};
+
+
+struct AddressRange {
+	std::optional<AddressRangeIpv4> ipv4;
+	std::optional<AddressRangeIpv6> ipv6;
+};
+
+	
 using OpNumFilter = std::optional<DWORD>;
 using UUIDFilter = std::optional<std::wstring>;
-using AddressFilter = std::optional<std::wstring>;
+using AddressRangeFilter = std::optional<AddressRange>;
 using protocolFilter = std::optional<std::wstring>;
+using SIDFilter = std::optional<std::wstring>;
 
 struct RpcCallPolicy
 {
@@ -17,9 +36,10 @@ struct LineConfig
 {
 	UUIDFilter uuid;
 	OpNumFilter opnum;
-	AddressFilter source_addr;
+	AddressRangeFilter addr;
 	RpcCallPolicy policy;
 	protocolFilter protocol;
+	SIDFilter sid;
 	bool verbose;
 };
 

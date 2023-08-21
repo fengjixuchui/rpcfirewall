@@ -16,6 +16,7 @@
 #include <iomanip>
 #include "config.hpp"
 #include "rpcWrappers.hpp"
+#include <sddl.h>
 
 #pragma comment(lib, "Ws2_32.lib")
 
@@ -42,6 +43,7 @@ DWORD configurationVersion = 0;
 template<typename T, typename U>
 std::basic_string<T> to_tstring(U arg)
 {
+	constexpr bool statAssert = true;
 	if constexpr (std::is_same_v<T, char>)
 	{
 		return std::to_string(arg);
@@ -52,7 +54,8 @@ std::basic_string<T> to_tstring(U arg)
 	}
 	else
 	{
-		static_assert(false);
+		statAssert = false;
+		static_assert(statAssert);
 	}
 }
 
@@ -254,6 +257,163 @@ std::wstring convertAuthSvcToString(unsigned long authSvc)
 	return TEXT("UNKNOWN");
 }
 
+void createMinIPv6(std::array<UINT16, 8>& ipv6, int maskLength) {
+
+	int fullBlocks = maskLength / 16;
+	int remainingBits = maskLength % 16;
+
+	for (int i = fullBlocks + 1; i < 8; ++i) {
+		ipv6[i] = 0;
+	}
+
+	int mask = (1 << (16 - remainingBits)) - 1;
+	ipv6[fullBlocks] &= ~mask;
+}
+
+void createMaxIPv6(std::array<UINT16, 8>& ipv6, int maskLength) {
+
+	int fullBlocks = maskLength / 16;
+	int remainingBits = maskLength % 16;
+
+	for (int i = fullBlocks + 1; i < 8; ++i) {
+		ipv6[i] = 0xFFFF;
+	}
+
+	int mask = (1 << (16 - remainingBits)) - 1;
+	ipv6[fullBlocks] |= mask;
+
+}
+
+bool IsAddress1SmallerThanAddress2(std::array<UINT16, 8>& addr1, std::array<UINT16, 8>& addr2)
+{
+	for (int i = 0; i < 8; i++)
+	{
+		if (addr1[i] < addr2[i])
+		{	
+			return true;
+		}
+	}
+	return false;
+}
+
+bool IsAddress1BiggerThanAddress2(std::array<UINT16, 8>& addr1, std::array<UINT16, 8>& addr2)
+{
+	for (int i = 0; i < 8; i++)
+	{
+		if (addr1[i] > addr2[i])
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
+bool IsAddress1BiggerThanAddress2(const std::wstring &addr1, std::array<UINT16, 8>& addr2)
+{
+	UINT8 ipv6arr[16];
+	std::array<UINT16, 8> ipv6Arr16 = {0};
+
+	if (InetPton(AF_INET6, addr1.c_str(), ipv6arr) == 1)
+	{
+		for (int i = 0; i < 8; i++)
+		{
+			ipv6Arr16[i] = ipv6arr[2 * i] * 256 + ipv6arr[2 * i + 1];
+		}
+
+	}
+
+	return IsAddress1BiggerThanAddress2(ipv6Arr16, addr2);
+}
+
+bool IsAddress1SmallerThanAddress2(const std::wstring& addr1, std::array<UINT16, 8>& addr2)
+{
+	UINT8 ipv6arr[16];
+	std::array<UINT16, 8> ipv6Arr16 = { 0 };
+
+	if (InetPton(AF_INET6, addr1.c_str(), ipv6arr) == 1)
+	{
+		for (int i = 0; i < 8; i++)
+		{
+			ipv6Arr16[i] = ipv6arr[2 * i] * 256 + ipv6arr[2 * i + 1];
+		}
+	}
+
+	return IsAddress1SmallerThanAddress2(ipv6Arr16, addr2);
+}
+
+bool isIpv4Addr(const std::wstring& testIp)
+{
+	UINT32 ipv4;
+
+	if (InetPton(AF_INET, testIp.c_str(), &ipv4) <= 0) return false;
+
+	return true;
+}
+
+bool isIPv4CIDR(const std::wstring& testIp)
+{
+	UINT32 ipv4;
+
+	size_t slashPos = testIp.find(L"/");
+	if (slashPos == std::string::npos) {
+		return false;
+	}
+
+	unsigned int prefixLength;
+
+	try {
+		prefixLength = std::stoi(testIp.substr(slashPos + 1));
+	}
+	catch (const std::exception&) {
+		return false;
+	}
+
+	std::wstring ipOnly = testIp.substr(0, slashPos);
+	if (!isIpv4Addr(ipOnly) || prefixLength > 32)
+	{
+		return false;
+	}
+
+	return true;
+}
+
+bool isIpv6Address(const std::wstring& testIp)
+{
+	BYTE ipv6[16];
+
+	if (InetPton(AF_INET6, testIp.c_str(), &ipv6) <= 0) return false;
+
+	return true;
+
+}
+
+bool isIPv6CIDR(const std::wstring& testIp)
+{
+	UINT8 ipv6[16];
+
+	size_t slashPos = testIp.find(L"/");
+	if (slashPos == std::string::npos) {
+		return false;
+	}
+
+	unsigned int prefixLength;
+
+	try {
+		prefixLength = std::stoi(testIp.substr(slashPos + 1));
+	}
+	catch (const std::exception&) {
+		return false;
+	}
+
+	std::wstring ipOnly = testIp.substr(0, slashPos);
+	if (!isIpv6Address(ipOnly) || prefixLength > 128)
+	{
+		return false;
+	}
+
+	return true;
+}
+
 std::tuple<size_t, size_t, bool> getConfigOffsets(std::string confStr)
 {
 	size_t start_pos = confStr.find("!start!");
@@ -327,11 +487,136 @@ OpNumFilter extractOpNumFilterFromConfigLine(const std::wstring& confLine)
 	}
 }
 
-AddressFilter extractAddressFromConfigLine(const std::wstring& confLine)
+unsigned long Ipv4StringToNumber(const std::wstring &ipv4)
 {
-	const std::wstring address = extractKeyValueFromConfigLine(confLine, _T("addr:"));
+	unsigned long ipv4Number;
+	InetPton(AF_INET, ipv4.c_str(), &ipv4Number);
+	return ntohl(ipv4Number);
+}
 
-	return address.empty() ? AddressFilter{} : AddressFilter{ address };
+AddressRangeIpv4 getMinMaxAddressesIPv4(const std::wstring& ipAddressCIDR) {
+	
+	size_t slashPos = ipAddressCIDR.find(L"/");
+	if (slashPos == std::string::npos) {
+		return AddressRangeIpv4{};
+	}
+
+	unsigned int prefixLength;
+
+	try {
+		prefixLength = std::stoi(ipAddressCIDR.substr(slashPos + 1));
+	}
+	catch (const std::exception&) {
+		return AddressRangeIpv4{};
+	}
+
+	std::wstring ipOnly = ipAddressCIDR.substr(0, slashPos);
+	if (!isIpv4Addr(ipOnly) || prefixLength > 32)
+	{
+		return AddressRangeIpv4{};
+	}
+
+	 unsigned long baseAddress = Ipv4StringToNumber(ipOnly);
+
+	// Calculate the minimum and maximum addresses
+	unsigned long mask = static_cast<unsigned long>(std::pow(2, 32 - prefixLength)) - 1;
+	unsigned long minAddress = baseAddress & ~mask;
+	unsigned long maxAddress = baseAddress | mask;
+
+	AddressRangeIpv4 aripv4;
+	aripv4.minAddr = minAddress;
+	aripv4.maxAddr = maxAddress;
+	return aripv4;
+
+}
+
+AddressRangeIpv6 getMinMaxAddressesIpv6(const std::wstring& ipAddress) {
+	UINT8 ipv6arr[16];
+	AddressRangeIpv6 aripv6 = {};
+
+
+	size_t slashPos = ipAddress.find(L"/");
+	if (slashPos == std::string::npos) {
+		//regular address
+		if (InetPton(AF_INET6, ipAddress.c_str(), ipv6arr) == 1) 
+		{
+			for (int i = 0; i < 8; i++)
+			{
+				aripv6.minAddr[i] = aripv6.maxAddr[i] = ipv6arr[2 * i] * 256 + ipv6arr[2 * i + 1];
+			}
+
+		}
+	}
+	else
+	{
+		unsigned int prefixLength;
+
+		try {
+			prefixLength = std::stoi(ipAddress.substr(slashPos + 1));
+		}
+		catch (const std::exception&) {
+			return AddressRangeIpv6{};
+		}
+
+		std::wstring ipOnly = ipAddress.substr(0, slashPos);
+		if (isIpv6Address(ipOnly) && prefixLength < 129)
+		{
+
+			if (InetPton(AF_INET6, ipOnly.c_str(), ipv6arr) == 1) {
+
+				for (int i = 0; i < 8; i++)
+				{
+					aripv6.minAddr[i] = aripv6.maxAddr[i] = ipv6arr[2 * i] * 256 + ipv6arr[2 * i + 1];
+				}
+
+				createMinIPv6(aripv6.minAddr, prefixLength);
+				createMaxIPv6(aripv6.maxAddr, prefixLength);
+			}
+		}
+	}
+
+	return aripv6;
+}
+
+AddressRangeFilter extractAddressFromConfigLine(const std::wstring& confLine)
+{
+	WRITE_DEBUG_MSG(L"Extracting address from config");
+	const std::wstring address = extractKeyValueFromConfigLine(confLine, _T("addr:"));
+	AddressRange addrRange = AddressRange{};
+
+	if (!address.empty())
+	{
+		if (isIPv4CIDR(address))
+		{
+			addrRange.ipv4 = getMinMaxAddressesIPv4(address);
+			addrRange.ipv6 = AddressRangeIpv6{};
+			WRITE_DEBUG_MSG_WITH_STATUS(L"Got IPv4 CIDR address with min value: ",addrRange.ipv4->minAddr);
+		}
+		else if (isIPv6CIDR(address))
+		{
+			addrRange.ipv4 = AddressRangeIpv4{};
+			addrRange.ipv6 = getMinMaxAddressesIpv6(address);
+			WRITE_DEBUG_MSG(L"Got IPv6 CIDR address");
+		}
+		else if (isIpv4Addr(address))
+		{
+			unsigned long addrNum = Ipv4StringToNumber(address);
+			AddressRangeIpv4 aripv4;
+			aripv4.minAddr = addrNum;
+			aripv4.maxAddr = addrNum;
+			
+			addrRange.ipv4 = aripv4;
+			WRITE_DEBUG_MSG_WITH_STATUS(L"Got regular IPv4 address with min value: ", addrRange.ipv4->minAddr);
+			addrRange.ipv6 = AddressRangeIpv6{};
+		}
+		else if (isIpv6Address(address))
+		{
+			WRITE_DEBUG_MSG(L"Got IPv6 regular address");
+			addrRange.ipv4 = AddressRangeIpv4{};
+			addrRange.ipv6 = getMinMaxAddressesIpv6(address);
+		}
+	}
+	return AddressRangeFilter{ addrRange };
 }
 
 bool extractActionFromConfigLine(const std::wstring& confLine)
@@ -373,6 +658,15 @@ protocolFilter extractProtocolFromConfigLine(const std::wstring& confLine)
 	return protocol.empty() ? protocolFilter{} : protocolFilter{ protocol };
 }
 
+SIDFilter extraceSIDFromConfigLine(const std::wstring& confLine)
+{
+	std::wstring sid = extractKeyValueFromConfigLine(confLine, _T("sid:"));
+
+	std::transform(sid.begin(), sid.end(), sid.begin(), ::toupper);
+
+	return sid.empty() ? SIDFilter{} : SIDFilter{ sid };
+
+}
 
 void loadPrivateBufferToPassiveVectorConfiguration()
 {
@@ -404,10 +698,12 @@ void loadPrivateBufferToPassiveVectorConfiguration()
 
 				lineConfig.uuid = extractUUIDFilterFromConfigLine(confLineString);
 				lineConfig.opnum = extractOpNumFilterFromConfigLine(confLineString);
-				lineConfig.source_addr = extractAddressFromConfigLine(confLineString);
+				lineConfig.addr = extractAddressFromConfigLine(confLineString);
 				lineConfig.policy = extractPolicyFromConfigLine(confLineString);
 				lineConfig.verbose = extractVerboseFromConfigLine(confLineString);
 				lineConfig.protocol = extractProtocolFromConfigLine(confLineString);
+				lineConfig.sid = extraceSIDFromConfigLine(confLineString);
+
 				passiveConfigVector.push_back(lineConfig);
 			}
 		}
@@ -462,14 +758,46 @@ bool checkOpNum(const OpNumFilter& opNumFilter, const std::wstring& opNumString)
 	return opNumFilter == std::stoi(opNumString);
 }
 
-bool checkAddress(const AddressFilter& addrFilter, const std::wstring& srcAddr)
+bool checkAddress(const AddressRangeFilter& addrRangeFilter, const std::wstring& srcAddr)
 {
-	if (!addrFilter.has_value())
+	WRITE_DEBUG_MSG(L"Checking address filter...");
+	if (!addrRangeFilter.has_value())
 	{
+		WRITE_DEBUG_MSG(L"address range has no value. Match.");
 		return true;
 	}
 	
-	return addrFilter == srcAddr;
+	if (isIpv4Addr(srcAddr))
+	{
+		if (!(addrRangeFilter.value().ipv4.has_value()))
+		{
+			WRITE_DEBUG_MSG(L"Ipv4 Match because no ipv4 address to compare to...");
+			return true;
+		}
+
+		UINT32 srcAddrNum = Ipv4StringToNumber(srcAddr);
+		std::wstring msg = L"Checking if " + std::to_wstring(srcAddrNum) + L" is between " + std::to_wstring(addrRangeFilter.value().ipv4.value().minAddr) + L" and " + std::to_wstring(addrRangeFilter.value().ipv4.value().maxAddr);
+		WRITE_DEBUG_MSG (msg.c_str());
+		return (srcAddrNum >= addrRangeFilter.value().ipv4.value().minAddr) && (srcAddrNum <= addrRangeFilter.value().ipv4.value().maxAddr);
+		
+	}
+
+	if (isIpv6Address(srcAddr))
+	{
+		if (!(addrRangeFilter.value().ipv6.has_value()))
+		{
+			WRITE_DEBUG_MSG(L"IPv6 has no value. Match.");
+			return true;
+		}
+		AddressRangeIpv6 addrRangeIpv6 = addrRangeFilter.value().ipv6.value();
+
+		WRITE_DEBUG_MSG(L"Checking if IPv6 is in range...");
+		WRITE_DEBUG_MSG(std::wstring(L"received address: ") + srcAddr);
+
+		return !(IsAddress1BiggerThanAddress2(srcAddr, addrRangeIpv6.maxAddr) || IsAddress1SmallerThanAddress2(srcAddr, addrRangeIpv6.minAddr));
+	}
+
+	return true;
 }
 
 
@@ -494,6 +822,77 @@ bool checkProtocol(const protocolFilter& protFilter, const std::wstring& protoco
 	return false;
 }
 
+// Function to check if the RPC caller has access based on the security descriptor
+bool checkIfSIDBelongstoSD(SIDFilter sidFilter)
+{
+	WRITE_DEBUG_MSG(_T("Entering checkIfSIDBelongstoSD ..."));
+	if (!sidFilter.has_value())
+	{
+		return true;
+	}
+
+	std::wstring securityDescriptorString = L"O:BAG:BAD:(A;;FA;;;" + sidFilter.value() + L")";
+
+	PSECURITY_DESCRIPTOR pSecurityDescriptor = (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR, SECURITY_DESCRIPTOR_MIN_LENGTH);
+
+
+	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(securityDescriptorString.c_str(),
+		SDDL_REVISION_1, &pSecurityDescriptor, nullptr))
+	{
+		WRITE_DEBUG_MSG(_T("ConvertStringSecurityDescriptorToSecurityDescriptorW failed..."));
+		return false;
+	}
+
+	WRITE_DEBUG_MSG(_T("Calling RpcImpersonateClient"));
+
+	RPC_STATUS status = RpcImpersonateClient(nullptr);
+	if (status != RPC_S_OK)
+	{
+		WRITE_DEBUG_MSG_WITH_STATUS(_T("RpcImpersonateClient failed"), status);
+		LocalFree(pSecurityDescriptor);
+		return false;
+	}
+
+	HANDLE hToken = nullptr;
+	if (!OpenThreadToken(GetCurrentThread(), TOKEN_ALL_ACCESS, true, &hToken))
+	{
+		WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("OpenThreadToken failed"));
+		RpcRevertToSelf();
+		LocalFree(pSecurityDescriptor);
+		return false;
+	}
+
+	GENERIC_MAPPING mapping;
+	mapping.GenericRead = FILE_GENERIC_READ;
+	mapping.GenericExecute = FILE_GENERIC_EXECUTE;
+	mapping.GenericWrite = FILE_GENERIC_WRITE;
+	mapping.GenericAll = FILE_ALL_ACCESS;
+
+	DWORD dwAccessDesired = FILE_GENERIC_READ;
+	MapGenericMask(&dwAccessDesired, &mapping);
+
+	DWORD dwAccessGranted;
+	BOOL bResult;
+	BOOL bAccessStatus = FALSE;
+	PRIVILEGE_SET PrivilegeSet;
+	DWORD dwPrivSetSize = sizeof(PRIVILEGE_SET);
+
+	PrivilegeSet.PrivilegeCount = 0;
+	PrivilegeSet.Control = 0;
+	bResult = AccessCheck(pSecurityDescriptor, hToken, dwAccessDesired, &mapping, &PrivilegeSet, &dwPrivSetSize, &dwAccessGranted, &bAccessStatus);
+	if (!bResult)
+	{
+		WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("AccessCheck failed"));
+	}
+
+	WRITE_DEBUG_MSG_WITH_STATUS(_T("AccessCheck returned "), bAccessStatus);
+
+	RpcRevertToSelf();
+	LocalFree(pSecurityDescriptor);
+	CloseHandle(hToken);
+	return bAccessStatus;
+}
+
 RpcCallPolicy getMatchingPolicy(const RpcEventParameters& rpcEvent)
 {
 	const ConfigVector& configurationVector = config.getActiveConfigurationVector();
@@ -501,11 +900,12 @@ RpcCallPolicy getMatchingPolicy(const RpcEventParameters& rpcEvent)
 	for (const LineConfig& lc : configurationVector)
 	{
 		const bool UUIDMatch = checkUUID(lc.uuid, rpcEvent.uuidString);
-		const bool AddressMatch = checkAddress(lc.source_addr, rpcEvent.sourceAddress);
+		const bool AddressMatch = checkAddress(lc.addr, rpcEvent.sourceAddress);
 		const bool OpNumMatch = checkOpNum(lc.opnum, rpcEvent.OpNum);
-		const bool ProtocolMatch = checkProtocol(lc.protocol, rpcEvent.protocol);		
+		const bool ProtocolMatch = checkProtocol(lc.protocol, rpcEvent.protocol);	
+		const bool SIDMatch = checkIfSIDBelongstoSD(lc.sid);
 
-		if (UUIDMatch && AddressMatch && OpNumMatch && ProtocolMatch)
+		if (UUIDMatch && AddressMatch && OpNumMatch && ProtocolMatch && SIDMatch)
 		{
 			WRITE_DEBUG_MSG(_T("Rule Matched for RPC call."));
 

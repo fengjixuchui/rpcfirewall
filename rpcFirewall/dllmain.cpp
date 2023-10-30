@@ -246,6 +246,7 @@ std::wstring convertAuthSvcToString(unsigned long authSvc)
 	{
 	case RPC_C_AUTHN_DPA: return TEXT("DPA");
 	case RPC_C_AUTHN_GSS_KERBEROS: return TEXT("KERBEROS");
+	case 68: return TEXT("NETLOGON");
 	case RPC_C_AUTHN_GSS_NEGOTIATE: return TEXT("NEGOTIATE");
 	case RPC_C_AUTHN_GSS_SCHANNEL: return TEXT("SCHANNEL");
 	case RPC_C_AUTHN_MQ: return TEXT("MQ");
@@ -622,7 +623,6 @@ AddressRangeFilter extractAddressFromConfigLine(const std::wstring& confLine)
 bool extractActionFromConfigLine(const std::wstring& confLine)
 {
 	std::wstring action = extractKeyValueFromConfigLine(confLine, _T("action:"));
-
 	return action.find(_T("block")) == std::string::npos;
 }
 
@@ -800,7 +800,6 @@ bool checkAddress(const AddressRangeFilter& addrRangeFilter, const std::wstring&
 	return true;
 }
 
-
 bool checkProtocol(const protocolFilter& protFilter, const std::wstring& protocol)
 {
 	if (!protFilter.has_value())
@@ -833,9 +832,8 @@ bool checkIfSIDBelongstoSD(SIDFilter sidFilter)
 
 	std::wstring securityDescriptorString = L"O:BAG:BAD:(A;;FA;;;" + sidFilter.value() + L")";
 
-	PSECURITY_DESCRIPTOR pSecurityDescriptor = (PSECURITY_DESCRIPTOR)LocalAlloc(LPTR, SECURITY_DESCRIPTOR_MIN_LENGTH);
-
-
+	PSECURITY_DESCRIPTOR pSecurityDescriptor = nullptr;
+	
 	if (!ConvertStringSecurityDescriptorToSecurityDescriptorW(securityDescriptorString.c_str(),
 		SDDL_REVISION_1, &pSecurityDescriptor, nullptr))
 	{
@@ -1084,7 +1082,6 @@ void waitForFurtherInstructions()
 	}
 }
 
-
 struct AutoUnloader
 {
 	~AutoUnloader()
@@ -1207,12 +1204,71 @@ bool APIENTRY DllMain( HMODULE hModule, DWORD  ul_reason_for_call, LPVOID lpRese
     return true;
 }
 
+std::wstring GetClientSIDString()
+{
+	std::wstring clientSID = L"S-1-0-0";
+
+	RPC_STATUS status = RpcImpersonateClient(nullptr);
+	if (status != RPC_S_OK)
+	{
+		WRITE_DEBUG_MSG_WITH_STATUS(_T("RpcImpersonateClient failed during GetClientSIDString"), status);
+		return clientSID;
+	}
+
+	HANDLE hToken = nullptr;
+	if (!OpenThreadToken(GetCurrentThread(), TOKEN_ALL_ACCESS, true, &hToken))
+	{
+		WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("OpenThreadToken failed during GetClientSIDString"));
+	}
+	else
+	{
+		DWORD dwSize = 0;
+		if (!GetTokenInformation(hToken, TokenUser, nullptr, 0, &dwSize) && GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+		{
+			WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("failed to get token information size"));
+		}
+		else
+		{
+			PTOKEN_USER tokenUser = (PTOKEN_USER)LocalAlloc(LPTR, dwSize);
+			if (tokenUser == nullptr)
+			{
+				WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("failed to allocate token information buffer"));
+			}
+			else
+			{
+				if (!GetTokenInformation(hToken, TokenUser, tokenUser, dwSize, &dwSize))
+				{
+					WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("failed to get token information"));
+				}
+				else
+				{
+					LPWSTR sidString = nullptr;
+					if (!ConvertSidToStringSidW(tokenUser->User.Sid, &sidString))
+					{
+						WRITE_DEBUG_MSG_WITH_GETLASTERROR(_T("failed to convert sid to string"));
+					}
+					clientSID.assign(sidString);
+				}
+
+				LocalFree(tokenUser);
+			}
+		}
+
+		CloseHandle(hToken);
+	}
+
+	RevertToSelf();
+	
+	return clientSID;
+}
+
 RpcEventParameters populateEventParameters(PRPC_MESSAGE pRpcMsg, wchar_t* szStringBindingServer, wchar_t* szStringBinding, wchar_t* functionName, std::wstring &srcAddr, unsigned short srcPort, std::wstring& dstAddr, unsigned short dstPort)
 {
 	RpcEventParameters eventParams = {};
 	eventParams.functionName = std::wstring(functionName);
 	eventParams.processID = std::wstring(myProcessID);
 	eventParams.processName = std::wstring(myProcessName);
+	eventParams.clientSID = GetClientSIDString();
 	
 	std::wstring srcPrt = std::to_wstring(srcPort);
 	eventParams.srcPort  = srcPrt;
